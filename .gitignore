@@ -5,3 +5,4 @@ state_*.json
 node_modules/
 # Local-only tracking (never commit)
 TODO.md
+.venv

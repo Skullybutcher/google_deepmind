@@ -1,16 +1,17 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { Play, Activity, CheckCircle, AlertTriangle, PlayCircle, Loader2 } from 'lucide-react';
 
 const MOCK_MODE = false;
-const API_BASE = ''; // Proxy handles this
+const API_BASE = ''; 
 
 const INITIAL_AGENTS = [
-    { id: 'Planner', name: 'Planner', role: 'Decomposes alert into subtasks', icon: '🧠' },
-    { id: 'LogAnalyzer', name: 'Log Analyzer', role: 'Scans application logs', icon: '📋' },
-    { id: 'MetricsAgent', name: 'Metrics Agent', role: 'Analyzes infrastructure metrics', icon: '📊' },
-    { id: 'Diagnostician', name: 'Diagnostician', role: 'Correlates findings', icon: '🔬' },
-    { id: 'Remediator', name: 'Remediator', role: 'Executes fixes', icon: '🔧' }
+    { id: 'Planner', name: 'Planner', role: 'Decomposes alert into subtasks', icon: 'psychology' },
+    { id: 'LogAnalyzer', name: 'Log Analyzer', role: 'Scans application logs', icon: 'article' },
+    { id: 'MetricsAgent', name: 'Metrics Agent', role: 'Analyzes infrastructure metrics', icon: 'monitoring' },
+    { id: 'Diagnostician', name: 'Diagnostician', role: 'Correlates findings', icon: 'troubleshoot' },
+    { id: 'Remediator', name: 'Remediator', role: 'Executes fixes', icon: 'build' }
 ];
+
+import LightRays from './components/LightRays';
 
 function App() {
   const [incidentStatus, setIncidentStatus] = useState('ALL SYSTEMS NORMAL');
@@ -20,9 +21,7 @@ function App() {
   const timelineRef = useRef(null);
 
   useEffect(() => {
-    if (timelineRef.current) {
-      timelineRef.current.scrollTop = timelineRef.current.scrollHeight;
-    }
+    // Auto-scroll disabled per user request
   }, [history]);
 
   const handleEvent = (event) => {
@@ -43,7 +42,7 @@ function App() {
     setIncidentStatus('STARTING...');
     
     if (MOCK_MODE) {
-      await replayMockEvents();
+      // Mock mode logic omitted for brevity as API is used
     } else {
       try {
         await fetch(`${API_BASE}/api/trigger-incident`, {
@@ -58,7 +57,7 @@ function App() {
         connectSSE();
       } catch (err) {
         console.error("Failed to trigger incident", err);
-        setIncidentStatus('ERROR: CONNECTION FAILED');
+        setIncidentStatus('ERROR');
       }
     }
   };
@@ -72,24 +71,7 @@ function App() {
     source.onerror = () => console.warn('SSE connection lost, retrying...');
   };
 
-  const replayMockEvents = async () => {
-    try {
-      const response = await fetch('/mock_events.json');
-      const events = await response.json();
-      for (const event of events) {
-        await new Promise(resolve => setTimeout(resolve, event.delay || 1000));
-        handleEvent(event);
-      }
-    } catch (err) {
-      console.error("Failed to load mock events", err);
-    }
-  };
-
   const injectFailure = async (failureType) => {
-    if (MOCK_MODE) {
-      alert(`Failure ${failureType} injected (mock mode doesn't affect replay natively)`);
-      return;
-    }
     await fetch(`${API_BASE}/api/inject-failure`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -97,19 +79,28 @@ function App() {
     });
   };
 
-  const getEventTypeClass = (type) => {
+  const getEventColorClass = (type) => {
     const map = {
-      'INCIDENT_CREATED': 'badge-info',
-      'PLAN_CREATED': 'badge-info',
-      'AGENT_STARTED': 'badge-info',
-      'AGENT_COMPLETED': 'badge-success',
-      'AGENT_FAILED': 'badge-error',
-      'REPLAN_TRIGGERED': 'badge-warning',
-      'PLAN_UPDATED': 'badge-warning',
-      'RESOLVED': 'badge-success',
-      'ESCALATED': 'badge-error'
+      'INCIDENT_CREATED': 'color-info',
+      'PLAN_CREATED': 'color-info',
+      'AGENT_STARTED': 'color-info',
+      'AGENT_THINKING': 'color-info',
+      'AGENT_COMPLETED': 'color-success',
+      'AGENT_FAILED': 'color-error',
+      'REPLAN_TRIGGERED': 'color-warning',
+      'PLAN_UPDATED': 'color-warning',
+      'RESOLVED': 'color-success',
+      'ESCALATED': 'color-error'
     };
-    return map[type] || 'badge-info';
+    return map[type] || 'color-info';
+  };
+  
+  const getStatusIcon = (status) => {
+    if (status.includes('NORMAL') || status === 'RESOLVED') return 'check_circle';
+    if (status === 'ESCALATED' || status.includes('ERROR')) return 'error';
+    if (status === 'STARTING...') return 'pending';
+    if (status === 'PLANNING' || status === 'INVESTIGATING' || status === 'DIAGNOSING' || status === 'REMEDIATING') return 'sync';
+    return 'info';
   };
 
   const formatTime = (isoString) => {
@@ -117,104 +108,172 @@ function App() {
     return d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
   };
 
+  const renderArrow = (start, end, label) => {
+    const dx = 40;
+    const path = `M ${start.x} ${start.y} C ${start.x + dx} ${start.y}, ${end.x - dx} ${end.y}, ${end.x} ${end.y}`;
+    return (
+      <g key={`${start.x}-${end.y}`}>
+        <path d={path} fill="none" stroke="#444" strokeWidth="1.5" strokeDasharray="4 4" markerEnd="url(#arrowhead)" />
+        {label && (
+          <text x={(start.x + end.x)/2} y={(start.y + end.y)/2 - 8} fill="#888" fontSize="11" fontFamily="monospace" fontStyle="italic" textAnchor="middle">
+            {label}
+          </text>
+        )}
+      </g>
+    );
+  };
+
+  const getAgentStatus = (id) => steps.find(s => s.agent === id)?.status || 'IDLE';
+  const getAgentThinking = (id) => steps.find(s => s.agent === id)?.thinking || '';
+
+  const nodes = [
+    { id: 'Planner', name: '1. Planner', role: 'Initializes Plan', x: 100, y: 230 },
+    { id: 'LogAnalyzer', name: '2. Log Analyzer', role: 'Scans Logs', x: 320, y: 110 },
+    { id: 'MetricsAgent', name: '3. Metrics Agent', role: 'Analyzes Metrics', x: 320, y: 350 },
+    { id: 'Diagnostician', name: '4. Diagnostician', role: 'Correlates Data', x: 540, y: 230 },
+    { id: 'Remediator', name: '5. Remediator', role: 'Executes Fix', x: 760, y: 230 },
+  ];
+
   return (
     <>
-      <div className="floating-avatar avatar-1">
-        <span className="icon">🧠</span>
-        <div className="info">
-          <span className="name">Planner</span>
-          <span className="status">Ready</span>
+      <div style={{ width: '100vw', height: '100vh', position: 'fixed', top: 0, left: 0, zIndex: 0, pointerEvents: 'none', display: 'flex', justifyContent: 'center', background: '#050505', overflow: 'hidden' }}>
+        <div style={{ width: '1080px', height: '1080px', position: 'relative', top: '-15%', opacity: 0.7 }}>
+          <LightRays
+            raysOrigin="top-center"
+            raysColor="#ffffff"
+            raysSpeed={1.5}
+            lightSpread={0.4}
+            rayLength={3.8}
+            pulsating={false}
+            fadeDistance={1.4}
+            saturation={1}
+            followMouse
+            mouseInfluence={0.1}
+            noiseAmount={0}
+            distortion={0}
+          />
         </div>
-      </div>
-      <div className="floating-avatar avatar-2">
-        <span className="icon">🔬</span>
-        <div className="info">
-          <span className="name">Diagnostician</span>
-          <span className="status">Ready</span>
-        </div>
-      </div>
-      <div className="floating-avatar avatar-3">
-        <span className="icon">🔧</span>
-        <div className="info">
-          <span className="name">Remediator</span>
-          <span className="status">Ready</span>
-        </div>
+        <div style={{ position: 'absolute', bottom: 0, left: 0, right: 0, height: '60vh', background: 'linear-gradient(to bottom, transparent, #050505)' }}></div>
       </div>
 
-      <header className="hero">
-        <h1 className="title"><em>AEGIS</em></h1>
+      <div style={{ zoom: 0.8, width: '100%', display: 'flex', flexDirection: 'column', alignItems: 'center' }}>
+        <header className="hero">
+          <h1 className="title">AEGIS</h1>
         <p className="subtitle">Autonomous Emergency Grid for Incident Self-healing</p>
       </header>
 
-      <main className="glass-card" id="main-panel">
-        <div className="incident-header">
-          <span className={`status-badge status-${incidentStatus.toLowerCase().replace(/ /g, '-')}`}>
-            {incidentStatus}
-          </span>
-        </div>
+      <div className="dashboard">
+        <div className="dashboard-left">
+          <h2 className="panel-title">Execution lifecycle with state-aware self-healing</h2>
+          
+          <div className="incident-header">
+            <div className="status-badge">
+              <span className="material-symbols-rounded" style={{
+                color: incidentStatus.includes('NORMAL') || incidentStatus === 'RESOLVED' ? 'var(--google-green)' : 
+                       incidentStatus === 'ESCALATED' ? 'var(--google-red)' : 'var(--google-blue)'
+              }}>
+                {getStatusIcon(incidentStatus)}
+              </span>
+              {incidentStatus}
+            </div>
+          </div>
 
-        <div className="agent-panel">
-          {INITIAL_AGENTS.map(agent => {
-            const step = steps.find(s => s.agent === agent.id);
-            const status = step?.status || 'IDLE';
-            return (
-              <div key={agent.id} className="agent-row">
-                <span className="agent-icon">{agent.icon}</span>
-                <div className="agent-info">
-                  <span className="agent-name">{agent.name}</span>
-                  <span className="agent-role">{agent.role}</span>
-                </div>
-                <span className={`status-chip status-${status.toLowerCase()}`}>
-                  {status}
-                </span>
-              </div>
-            );
-          })}
-        </div>
+          <div className="flowchart-container">
+            <div className="flowchart-inner">
+              {/* <div className="flowchart-header">
+                <h2 className="flowchart-title">Autonomous Agent Recovery Flow</h2>
+                <p className="flowchart-subtitle">Execution lifecycle with state-aware self-healing</p>
+              </div> */}
+              
+              <svg width="100%" height="100%" style={{ position: 'absolute', top: 0, left: 0, zIndex: 1 }}>
+                <defs>
+                  <marker id="arrowhead" markerWidth="10" markerHeight="7" refX="9" refY="3.5" orient="auto">
+                    <polygon points="0 0, 10 3.5, 0 7" fill="#444" />
+                  </marker>
+                </defs>
+                {renderArrow({x: 190, y: 230}, {x: 230, y: 110}, 'Delegates')}
+                {renderArrow({x: 190, y: 230}, {x: 230, y: 350}, 'Delegates')}
+                {renderArrow({x: 410, y: 110}, {x: 450, y: 230}, 'Output')}
+                {renderArrow({x: 410, y: 350}, {x: 450, y: 230}, 'Output')}
+                {renderArrow({x: 630, y: 230}, {x: 670, y: 230}, 'Routes to')}
+              </svg>
 
-        <div className="cta-container">
-          <button 
-            className="btn-primary" 
-            onClick={triggerIncident}
-            disabled={isTriggered}
-          >
-            {isTriggered ? <><Loader2 size={18} className="animate-spin" /> Triggered...</> : <><PlayCircle size={18} /> Trigger Incident</>}
-          </button>
-        </div>
+              {nodes.map(node => {
+                const status = getAgentStatus(node.id);
+                const thinking = getAgentThinking(node.id);
+                return (
+                  <div key={node.id} className="flow-node-wrapper" style={{ left: node.x, top: node.y }}>
+                    <div className={`flow-node status-${status.toLowerCase()}`}>
+                      <p className="node-title">{node.name}</p>
+                      <p className="node-role">{node.role}</p>
+                    </div>
+                    {thinking && (
+                      <div className="flow-node-thinking">{thinking}</div>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+          </div>
 
-        {isTriggered && (
-          <div className="failure-buttons">
-            <button className="btn-secondary" onClick={() => injectFailure('LOG_SOURCE_UNAVAILABLE')}>
-              Inject: Log Failure
-            </button>
-            <button className="btn-secondary" onClick={() => injectFailure('REMEDIATION_FAILED')}>
-              Inject: Remediation Failure
+          <div className="cta-container">
+            <button 
+              className="btn-primary" 
+              onClick={triggerIncident}
+              disabled={isTriggered}
+            >
+              {isTriggered ? (
+                <span className="material-symbols-rounded" style={{ animation: 'spin 2s linear infinite' }}>hourglass_empty</span>
+              ) : (
+                <span className="material-symbols-rounded">play_arrow</span>
+              )}
+              {isTriggered ? 'Triggered...' : 'Trigger Incident'}
             </button>
           </div>
-        )}
-      </main>
 
-      <div className="timeline-container">
-        <h3 className="timeline-title">Incident Timeline</h3>
-        <div className="timeline" ref={timelineRef}>
-          {history.length === 0 && (
-            <div className="timeline-entry badge-info" style={{ opacity: 0.5, justifyContent: 'center' }}>
-              <span className="timeline-detail" style={{textAlign: 'center'}}>Waiting for events...</span>
+          {isTriggered && (
+            <div className="failure-buttons">
+              <button className="btn-secondary" onClick={() => injectFailure('LOG_SOURCE_UNAVAILABLE')}>
+                Inject: Log Failure
+              </button>
+              <button className="btn-secondary" onClick={() => injectFailure('REMEDIATION_FAILED')}>
+                Inject: Remediation Failure
+              </button>
             </div>
           )}
-          {history.map((event) => (
-            <div key={event.id} className={`timeline-entry ${getEventTypeClass(event.event_type)}`}>
-              <span className="timeline-time">{formatTime(event.timestamp)}</span>
-              <span className={`timeline-badge ${getEventTypeClass(event.event_type)}`}>{event.event_type}</span>
-              <span className="timeline-detail">{event.message}</span>
+        </div>
+
+        <div className="dashboard-right">
+          <h2 className="panel-title">System Logs</h2>
+          <div className="timeline-container" ref={timelineRef}>
+            <div className="timeline">
+              {history.map((event) => (
+                <div key={event.id} className="timeline-entry">
+                  <span className="timeline-time">{formatTime(event.timestamp)}</span>
+                  <div className="timeline-content">
+                    <span className={`timeline-badge ${getEventColorClass(event.event_type)}`}>
+                      {event.event_type.replace(/_/g, ' ')}
+                    </span>
+                    <span className="timeline-detail">{event.message}</span>
+                  </div>
+                </div>
+              ))}
             </div>
-          ))}
+          </div>
         </div>
       </div>
 
-      <div className="credibility-strip">
-        Powered by <strong>Antigravity Agent</strong> · Interactions API · FastAPI · SSE
+      {/* <div className="credibility-strip">
+        Powered by <strong>Antigravity Agent</strong>
+      </div> */}
       </div>
+      
+      <style>{`
+        @keyframes spin {
+          from { transform: rotate(0deg); }
+          to { transform: rotate(360deg); }
+        }
+      `}</style>
     </>
   );
 }
