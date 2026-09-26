@@ -109,12 +109,49 @@ def detect_anomaly(metrics: dict[str, Any]) -> dict[str, Any]:
 
 
 def correlate_findings(log_findings: dict[str, Any] | None, metrics_findings: dict[str, Any] | None) -> dict[str, Any]:
-    partial = log_findings is None
+    """Correlate log + metric findings into joint evidence for diagnosis."""
+    partial = log_findings is None or (isinstance(log_findings, dict) and log_findings.get("status") == "error")
+
+    evidence = []
+    if not partial and log_findings:
+        evidence.append("OutOfMemoryError in logs correlates with memory spike in metrics")
+        evidence.append("Both anomalies begin around deployment v2.3.1 time window")
+        evidence.append("Circuit breaker activation confirms cascading failure pattern")
+    if metrics_findings:
+        evidence.append("CPU spike from 52% to 95% at 09:58 matches deployment window")
+        evidence.append("Memory climbing to 99% with no plateau — classic leak signature")
+        evidence.append("P99 latency 100x increase confirms user-facing impact")
+
     return {
         "status": "completed",
         "correlated": True,
         "partial_data": partial,
         "missing_source": "logs" if partial else None,
+        "evidence": evidence,
+        "correlation_strength": "strong" if not partial else "moderate",
+        "suggested_root_cause": "Memory leak from deployment v2.3.1" if not partial else "Probable infrastructure issue — insufficient data for certainty",
+    }
+
+
+def propose_diagnosis(
+    root_cause: str,
+    confidence: float,
+    evidence: list[str],
+    recommended_action: str,
+    action_details: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Accept the agent's structured diagnosis. This is a pass-through — the
+    agent's own reasoning IS the diagnosis, we just stamp and return it."""
+    return {
+        "status": "completed",
+        "diagnosis": {
+            "root_cause": root_cause,
+            "confidence": confidence,
+            "evidence": evidence,
+            "recommended_action": recommended_action,
+            "action_details": action_details or {"type": recommended_action.upper(), "target_version": "v2.3.0", "service": "api-gateway"},
+            "diagnosed_at": _now(),
+        },
     }
 
 
@@ -125,12 +162,38 @@ def execute_fix(action_type: str, target_service: str, details: dict[str, Any] |
 
 
 def verify_fix(service: str, check_type: str = "HEALTH_CHECK") -> dict[str, Any]:
+    # If remediation was injected as failed, verification should also reflect instability
+    if "REMEDIATION_FAILED" in ACTIVE_FAILURES:
+        return {
+            "status": "error",
+            "check_type": check_type,
+            "result": f"Verification FAILED: {service} still unhealthy. Latency p99: 9500ms. Error rate: 38%.",
+            "verified_at": _now(),
+            "service": service,
+        }
     return {**SIMULATED_VERIFY_SUCCESS, "verified_at": _now(), "service": service}
 
 
 def set_failures(failures: list[str]) -> list[str]:
+    """Set active failure injection flags. Pass ['NONE'] to clear all."""
     ACTIVE_FAILURES.clear()
     for f in failures:
         if f != "NONE":
             ACTIVE_FAILURES.add(f)
     return sorted(ACTIVE_FAILURES)
+
+
+# === TOOL DISPATCH TABLE ===
+# Person A's orchestrator can use this to route tool calls from agents
+# to the correct simulated function by name.
+TOOL_HANDLERS: dict[str, Any] = {
+    "fetch_logs": fetch_logs,
+    "analyze_pattern": analyze_pattern,
+    "fetch_metrics": fetch_metrics,
+    "detect_anomaly": detect_anomaly,
+    "correlate_findings": correlate_findings,
+    "propose_diagnosis": propose_diagnosis,
+    "execute_fix": execute_fix,
+    "verify_fix": verify_fix,
+}
+

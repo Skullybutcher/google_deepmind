@@ -53,7 +53,12 @@ OUTPUT_SCHEMA = {
 
 DEFAULT_FALLBACK = {
     "status": "completed",
-    "findings": {"anomalies": [], "confidence": 0.0, "note": "Agent output was unparseable"},
+    "remediation": {
+        "action": "RESTART",
+        "result": "Fallback action — agent output was unparseable. Attempted generic restart.",
+        "verified": False,
+        "note": "Agent output was unparseable; orchestrator should consider escalation.",
+    },
 }
 
 AGENT_NAME = "Remediator"
