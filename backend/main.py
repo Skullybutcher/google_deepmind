@@ -40,7 +40,6 @@ async def _broadcast_raw(chunk: dict):
     chunk["id"] = str(next(_seq_counter))
     for q in list(_subscribers):
         await q.put(chunk)
-        await q.put(chunk)
 
 
 def get_backend():

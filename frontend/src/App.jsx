@@ -19,32 +19,64 @@ function App() {
   const [history, setHistory] = useState([]);
   const [isTriggered, setIsTriggered] = useState(false);
   const timelineRef = useRef(null);
+  const sseRef = useRef(null);
 
   useEffect(() => {
     // Auto-scroll disabled per user request
   }, [history]);
 
+  // Close any existing SSE connection
+  const closeSSE = () => {
+    if (sseRef.current) {
+      sseRef.current.close();
+      sseRef.current = null;
+    }
+  };
+
   const handleEvent = (event) => {
     const data = event.data;
     if (data.status) setIncidentStatus(data.status);
     if (data.steps) setSteps(data.steps);
-    
-    setHistory(prev => [...prev, {
-      id: Date.now() + Math.random(),
-      timestamp: event.timestamp || new Date().toISOString(),
-      event_type: event.event_type,
-      message: data.message || ''
-    }]);
+
+    // Only append if it carries meaningful content (skip bare snapshots that
+    // replay old history without a message — those are handled via data.steps /
+    // data.status above).
+    if (event.event_type !== 'STATE_SNAPSHOT') {
+      setHistory(prev => [...prev, {
+        id: Date.now() + Math.random(),
+        timestamp: event.timestamp || new Date().toISOString(),
+        event_type: event.event_type,
+        message: data.message || ''
+      }]);
+    }
+
+    // Auto-unlock the trigger button when the pipeline reaches a terminal state
+    const terminal = ['RESOLVED', 'ESCALATED'];
+    if (terminal.includes(data.status) || terminal.includes(event.event_type)) {
+      setIsTriggered(false);
+      closeSSE();
+    }
   };
 
   const triggerIncident = async () => {
+    // Reset all UI state for a fresh run
+    closeSSE();
+    setSteps([]);
+    setHistory([]);
     setIsTriggered(true);
     setIncidentStatus('STARTING...');
-    
+
     if (MOCK_MODE) {
       // Mock mode logic omitted for brevity as API is used
     } else {
       try {
+        // Clear any stale injected failures from previous sessions before
+        // triggering so a fresh happy-path run is not polluted.
+        await fetch(`${API_BASE}/api/inject-failure`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ failure_type: 'NONE' })
+        });
         await fetch(`${API_BASE}/api/trigger-incident`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
@@ -58,12 +90,15 @@ function App() {
       } catch (err) {
         console.error("Failed to trigger incident", err);
         setIncidentStatus('ERROR');
+        setIsTriggered(false);
       }
     }
   };
 
   const connectSSE = () => {
+    closeSSE(); // guard against duplicate connections
     const source = new EventSource(`${API_BASE}/api/events`);
+    sseRef.current = source;
     source.addEventListener('state_update', (e) => {
       const event = JSON.parse(e.data);
       handleEvent(event);

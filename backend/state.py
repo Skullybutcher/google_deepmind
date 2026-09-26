@@ -45,6 +45,11 @@ def _now() -> str:
 
 def new_incident(alert_type: str, service: str, severity: str) -> dict:
     incident_id = f"INC-{datetime.now(timezone.utc).strftime('%Y%m%d-%H%M%S')}"
+    # Consume the pre-injected failures and immediately clear them so that a
+    # second trigger (e.g. after a page reload) starts with a clean slate unless
+    # the user explicitly re-injects a failure first.
+    with _lock:
+        injected = list(_store.pop("_injected_failures", []))
     state = {
         "incident_id": incident_id,
         "status": "PLANNING",
@@ -69,10 +74,11 @@ def new_incident(alert_type: str, service: str, severity: str) -> dict:
             "guardrail_triggered": False,
         },
         "history": [],
-        # NOTE: failure flags set via /api/inject-failure PERSIST across
-        # incidents (demo script: inject -> trigger -> watch degraded run).
-        # Clear them explicitly with failure_type="NONE".
-        "active_failures": _store.get("_injected_failures", []),
+        # Failures injected via /api/inject-failure before this trigger are
+        # consumed once. The frontend sends failure_type=NONE before every
+        # fresh trigger, so stale failures from a prior session are always
+        # cleared before new_incident is called.
+        "active_failures": injected,
         "retry_count": 0,
         "interaction_ids": {},  # agent -> latest interaction id (prev chaining)
         "environment_id": None,
