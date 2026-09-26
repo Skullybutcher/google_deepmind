@@ -22,6 +22,8 @@ function App() {
   const [isApproving, setIsApproving] = useState(false);
   const [awaitingApproval, setAwaitingApproval] = useState(false);
   const [toasts, setToasts] = useState([]);
+  const [bench, setBench] = useState(null);
+  const [benchLoading, setBenchLoading] = useState(false);
   const timelineRef = useRef(null);
   const sseRef = useRef(null);
 
@@ -187,6 +189,21 @@ function App() {
     } catch (err) {
       console.error("Failed to simulate webhook", err);
       setIncidentStatus('ERROR');
+    }
+  };
+
+  // OC7: benchmark table data from the live backend endpoint
+  const runBenchmarks = async () => {
+    setBenchLoading(true);
+    try {
+      const res = await fetch(`${API_BASE}/api/benchmarks`);
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      setBench(await res.json());
+    } catch (err) {
+      console.error('Failed to run benchmarks', err);
+      addToast('⚠️ Benchmarks failed — is an incident mid-flight?', 'error');
+    } finally {
+      setBenchLoading(false);
     }
   };
 
@@ -407,6 +424,59 @@ function App() {
               </button>
             </div>
           )}
+
+          {/* Benchmark table — OC7 (built by FreeBuff per reassignment in AGENTS_SYNC.md) */}
+          <div className="bench-panel">
+            <div className="bench-header">
+              <h3 className="bench-title">Severity Profiles, Measured</h3>
+              <button
+                className="btn-secondary bench-run-btn"
+                onClick={runBenchmarks}
+                disabled={benchLoading || isTriggered}
+              >
+                <span className="material-symbols-rounded" style={{
+                  animation: benchLoading ? 'spin 2s linear infinite' : 'none'
+                }}>{benchLoading ? 'progress_activity' : 'speed'}</span>
+                {benchLoading ? 'Measuring...' : 'Run Benchmarks'}
+              </button>
+            </div>
+            {bench && (
+              <>
+                <table className="bench-table">
+                  <thead>
+                    <tr>
+                      <th>Scenario</th>
+                      <th>Sev</th>
+                      <th>Result</th>
+                      <th>Plan v</th>
+                      <th>Agent calls</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {bench.scenarios.map(row => (
+                      <tr key={row.scenario}>
+                        <td>{row.scenario}</td>
+                        <td>
+                          <span className={`bench-sev sev-${row.severity.toLowerCase()}`}>{row.severity}</span>
+                        </td>
+                        <td>
+                          <span className={
+                            row.status === 'RESOLVED' ? 'bench-status ok' :
+                            row.status === 'ESCALATED' ? 'bench-status esc' : 'bench-status'}
+                          >
+                            {row.status}
+                          </span>
+                        </td>
+                        <td>v{row.plan_versions}</td>
+                        <td>{row.agent_calls}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+                <p className="bench-note">{bench.note}</p>
+              </>
+            )}
+          </div>
         </div>
 
         <div className="dashboard-right">

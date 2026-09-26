@@ -574,3 +574,115 @@ body {
         transform: translateX(0);
     }
 }
+
+/* Benchmark table - OC7 (built by FreeBuff) */
+.bench-panel {
+    background: #0f0f0f;
+    border: 1px solid #1f1f1f;
+    border-radius: 16px;
+    padding: 1.5rem;
+    z-index: 10;
+    box-shadow: 0 10px 30px rgba(0, 0, 0, 0.3);
+}
+
+.bench-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin-bottom: 1rem;
+}
+
+.bench-title {
+    font-family: var(--font-heading);
+    font-size: 1.05rem;
+    font-weight: 600;
+    color: var(--text-primary);
+    margin: 0;
+    letter-spacing: -0.02em;
+}
+
+.bench-run-btn {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
+
+.bench-run-btn .material-symbols-rounded {
+    font-size: 1.1rem;
+}
+
+.bench-table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 0.9rem;
+}
+
+.bench-table th {
+    font-family: var(--font-heading);
+    font-size: 0.75rem;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    color: var(--text-secondary);
+    text-align: left;
+    padding: 0.5rem 0.75rem;
+    border-bottom: 1px solid #333;
+}
+
+.bench-table td {
+    padding: 0.65rem 0.75rem;
+    border-bottom: 1px solid #1f1f1f;
+    color: var(--text-primary);
+}
+
+.bench-table tr:last-child td {
+    border-bottom: none;
+}
+
+.bench-sev {
+    font-family: var(--font-heading);
+    font-size: 0.75rem;
+    font-weight: 600;
+    padding: 3px 10px;
+    border-radius: var(--radius-pill);
+}
+
+.bench-sev.sev-p1 {
+    background: rgba(242, 139, 130, 0.15);
+    color: var(--google-red);
+    border: 1px solid var(--google-red);
+}
+
+.bench-sev.sev-p2 {
+    background: rgba(253, 226, 147, 0.15);
+    color: var(--google-yellow);
+    border: 1px solid var(--google-yellow);
+}
+
+.bench-sev.sev-p3 {
+    background: rgba(129, 201, 149, 0.15);
+    color: var(--google-green);
+    border: 1px solid var(--google-green);
+}
+
+.bench-status {
+    font-family: var(--font-heading);
+    font-weight: 600;
+    font-size: 0.85rem;
+    color: var(--text-secondary);
+}
+
+.bench-status.ok {
+    color: var(--google-green);
+}
+
+.bench-status.esc {
+    color: var(--google-red);
+}
+
+.bench-note {
+    font-size: 0.8rem;
+    color: var(--text-secondary);
+    line-height: 1.5;
+    margin: 1rem 0 0 0;
+}

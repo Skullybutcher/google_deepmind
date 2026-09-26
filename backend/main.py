@@ -4,8 +4,10 @@ Routes per ARCHITECTURE.md §2. FreeBuff swaps `get_backend` to return the
 real Interactions-API backend; orchestrator + routes stay identical.
 """
 import asyncio
+import copy as _copy
 import json
 import os
+import time
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from itertools import count
@@ -243,6 +245,85 @@ async def events():
             _subscribers.discard(q)
 
     return EventSourceResponse(gen())
+
+
+@app.get("/api/benchmarks")
+async def benchmarks():
+    """OC7: runs the deterministic benchmark suite (StubBackend) through the
+    REAL orchestrator and returns rows for the dashboard table.
+
+    Saves and restores live incident state around the run — the suite wipes
+    _store internally. Refuses while an incident is mid-flight: the running
+    orchestrator holds references INTO _store["incidents"], and the wipe
+    would sever them.
+
+    Same suite as backend/scripts/benchmark.py (data source of benchmarks.md);
+    duplicated inline because that module's runner clears global state and
+    cannot be reused safely inside the server process.
+    """
+    from .orchestrator import StubBackend, run_incident_safe
+    from .scripts.benchmark import SCENARIOS
+
+    st = store.get_state()
+    if st and st["status"] not in ("RESOLVED", "ESCALATED"):
+        raise HTTPException(
+            409, f"incident {st['incident_id']} is {st['status']} - benchmarks "
+                 "replace live state; wait for a terminal status")
+
+    saved_store = _copy.deepcopy(
+        {k: v for k, v in store._store.items() if not k.startswith("_")})
+    saved_failures = list(store._store.get("_injected_failures", []))
+    try:
+        rows = []
+        for name, sev, failures, _expect in SCENARIOS:
+            store._store.clear()
+            store._store.update({"active_id": None, "incidents": {}})
+            store._store["_injected_failures"] = list(failures)
+            inc = store.new_incident("HIGH_LATENCY", "api-gateway", sev)
+            iid = inc["incident_id"]
+
+            # Same auto-approver as scripts/benchmark.py: guardrail-parked
+            # scenarios must not sit out the 120s human timeout in-process.
+            async def _auto_approve(iid=iid):
+                while True:
+                    await asyncio.sleep(0.05)
+                    s = store.get_state(iid)
+                    if not s:
+                        return
+                    if s["status"] == "AWAITING_APPROVAL":
+                        store.resolve_approval(iid, approved=True)
+                    if s["status"] in ("RESOLVED", "ESCALATED"):
+                        return
+
+            approver = asyncio.create_task(_auto_approve())
+            t0 = time.monotonic()
+            await run_incident_safe(iid, StubBackend(), emit=None)
+            elapsed = time.monotonic() - t0
+            approver.cancel()
+
+            s = store.get_state(iid)
+            rows.append({
+                "scenario": name,
+                "severity": sev,
+                "status": s["status"],
+                "wall_seconds": round(elapsed, 3),
+                "plan_versions": s["plan"]["version"],
+                "agent_calls": sum(1 for h in s["history"]
+                                   if h["event"] == "AGENT_COMPLETED"),
+            })
+        return {
+            "run_at": datetime.now(timezone.utc).isoformat(),
+            "backend": "stub (deterministic)",
+            "note": "Stub wall-clock is execution time only; real mode adds "
+                    "LLM latency (~100s happy path). Agent calls is the cost "
+                    "proxy: one Interactions API round trip each in real mode.",
+            "scenarios": rows,
+        }
+    finally:
+        store._store.clear()
+        store._store.update(_copy.deepcopy(saved_store))
+        if saved_failures:
+            store._store["_injected_failures"] = saved_failures
 
 
 @app.get("/", response_class=HTMLResponse)
