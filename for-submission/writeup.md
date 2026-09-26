@@ -2,7 +2,9 @@
 
 *A stateful multi-agent orchestration system for automated incident response, powered by Antigravity managed agents via the Interactions API.*
 
-**Repo**: https://github.com/Skullybutcher/google_deepmind  
+**Live demo**: https://aegis-deepmind.netlify.app/
+**Backend API**: https://aegis-backend-5l4g.onrender.com
+**Repo**: https://github.com/Skullybutcher/google_deepmind
 **Eval**: 82/82 golden-scenario checks passing (`python -m backend.eval.run_eval`)
 
 ---
@@ -97,12 +99,9 @@ Both failures inject on demand via dashboard buttons (`LOG_SOURCE_UNAVAILABLE`, 
 
 ## 6. Design & Demo Experience (150 words)
 
-The dashboard is a dark-mode incident console built in React + Tailwind CSS. A live flowchart visualises the five-agent pipeline in real time — each node transitions from pending (grey) → in-progress (pulsing) → completed (green) / failed (red) as SSE events arrive. Ambient LightRays background animation signals system activity. A timeline panel below the flowchart logs every orchestration event with timestamps. A separate telemetry panel shows wall-clock time per agent, estimated API cost, and plan version count — directly visible to judges.
+The dashboard is a dark-mode incident console built in React + Tailwind CSS, live at **https://aegis-deepmind.netlify.app/**. A live flowchart visualises the five-agent pipeline in real time — each node transitions from pending (grey) → in-progress (pulsing) → completed (green) / failed (red) as SSE events arrive. Ambient LightRays background animation signals system activity. A timeline panel logs every orchestration event with timestamps.
 
-Failure-injection buttons sit alongside the "Trigger Incident" button. Judges click "Inject: Log Source Unavailable" mid-run and watch the flowchart show S1 fail, S3 replan, and the degraded plan continue — the system's intelligence is demonstrated through the UI, not just in a terminal.
-
-*[TODO: screenshot — happy-path RESOLVED dashboard — Person C]*
-*[TODO: screenshot — failure → replan flowchart — Person C]*
+Failure-injection buttons sit alongside the "Trigger Incident" button. Clicking "Inject: Log Source Unavailable" mid-run causes the flowchart to show S1 fail, a replan trigger, and the degraded plan continue — the system's intelligence is demonstrated through the UI, not just in a terminal. The backend API is publicly accessible at **https://aegis-backend-5l4g.onrender.com**.
 
 ---
 
@@ -112,4 +111,4 @@ AEGIS shows genuine multi-agent orchestration — real planning, delegation, sta
 
 ---
 
-*Word budget: ~1500. Assets still pending: architecture diagram (Person A), 2 screenshots (Person C).*
+*Word budget: ~1500.*
