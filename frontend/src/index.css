@@ -379,6 +379,11 @@ body {
     to { opacity: 1; transform: translateY(0); }
 }
 
+@keyframes spin {
+    from { transform: rotate(0deg); }
+    to { transform: rotate(360deg); }
+}
+
 /* Credibility Strip */
 .credibility-strip {
     margin-top: 4rem;
@@ -392,4 +397,180 @@ body {
 .credibility-strip strong {
     color: var(--text-primary);
     font-weight: 600;
+}
+
+/* Approval Banner - OC1 */
+.approval-banner {
+    display: flex;
+    align-items: center;
+    gap: 1rem;
+    padding: 1rem 1.5rem;
+    background: rgba(253, 226, 147, 0.15);
+    border: 1px solid var(--google-yellow);
+    border-radius: 12px;
+    margin-bottom: 1rem;
+    color: var(--google-yellow);
+}
+
+.approval-banner .material-symbols-rounded {
+    font-size: 1.5rem;
+}
+
+.btn-approve {
+    margin-left: auto;
+    background: var(--google-yellow);
+    color: #000;
+    border: none;
+    border-radius: var(--radius-pill);
+    padding: 10px 24px;
+    font-family: var(--font-heading);
+    font-size: 0.95rem;
+    font-weight: 600;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    transition: all 0.2s ease;
+}
+
+.btn-approve:hover:not(:disabled) {
+    background: #e8c770;
+    transform: translateY(-2px);
+    box-shadow: 0 4px 12px rgba(253, 226, 147, 0.3);
+}
+
+.btn-approve:disabled {
+    opacity: 0.7;
+    cursor: not-allowed;
+}
+
+/* Severity Selector - OC3 */
+.severity-selector {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 1rem;
+    padding: 1rem;
+    background: #0f0f0f;
+    border: 1px solid #1f1f1f;
+    border-radius: 12px;
+    margin-bottom: 1rem;
+}
+
+.severity-label {
+    font-family: var(--font-heading);
+    font-size: 0.9rem;
+    color: var(--text-secondary);
+}
+
+.severity-buttons {
+    display: flex;
+    gap: 0.5rem;
+}
+
+.severity-btn {
+    background: #151515;
+    color: var(--text-secondary);
+    border: 1px solid #333;
+    border-radius: var(--radius-pill);
+    padding: 8px 16px;
+    font-family: var(--font-heading);
+    font-size: 0.85rem;
+    font-weight: 500;
+    cursor: pointer;
+    transition: all 0.2s ease;
+}
+
+.severity-btn:hover:not(:disabled) {
+    border-color: var(--google-blue);
+    color: var(--text-primary);
+}
+
+.severity-btn.active {
+    background: var(--google-blue);
+    color: #000;
+    border-color: var(--google-blue);
+}
+
+.severity-btn:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+}
+
+/* Webhook Demo Button - OC4 */
+.webhook-demo {
+    display: flex;
+    justify-content: center;
+    margin-bottom: 1rem;
+}
+
+.webhook-btn {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
+
+.webhook-btn .material-symbols-rounded {
+    font-size: 1.1rem;
+}
+
+/* Toast notifications for APPROVED / SPAWNED_AGENTS */
+.toast-container {
+    position: fixed;
+    top: 80px;
+    right: 24px;
+    z-index: 1000;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    pointer-events: none;
+}
+
+.toast {
+    padding: 12px 20px;
+    border-radius: 12px;
+    font-family: var(--font-body);
+    font-size: 0.9rem;
+    font-weight: 500;
+    box-shadow: 0 8px 24px rgba(0, 0, 0, 0.4);
+    animation: slideInRight 0.3s ease-out;
+    min-width: 240px;
+    max-width: 360px;
+    pointer-events: auto;
+    backdrop-filter: blur(8px);
+}
+
+.toast-success {
+    background: rgba(129, 201, 149, 0.95);
+    color: #000;
+    border: 1px solid var(--google-green);
+}
+
+.toast-info {
+    background: rgba(138, 180, 248, 0.95);
+    color: #000;
+    border: 1px solid var(--google-blue);
+}
+
+.toast-warning {
+    background: rgba(253, 226, 147, 0.95);
+    color: #000;
+    border: 1px solid var(--google-yellow);
+}
+
+.toast-error {
+    background: rgba(242, 139, 130, 0.95);
+    color: #000;
+    border: 1px solid var(--google-red);
+}
+
+@keyframes slideInRight {
+    from {
+        opacity: 0;
+        transform: translateX(100%);
+    }
+    to {
+        opacity: 1;
+        transform: translateX(0);
+    }
 }

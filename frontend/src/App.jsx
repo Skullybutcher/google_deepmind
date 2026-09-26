@@ -18,8 +18,19 @@ function App() {
   const [steps, setSteps] = useState([]);
   const [history, setHistory] = useState([]);
   const [isTriggered, setIsTriggered] = useState(false);
+  const [severity, setSeverity] = useState('P1');
+  const [isApproving, setIsApproving] = useState(false);
+  const [awaitingApproval, setAwaitingApproval] = useState(false);
+  const [toasts, setToasts] = useState([]);
   const timelineRef = useRef(null);
   const sseRef = useRef(null);
+
+  // Toast system for APPROVED / SPAWNED_AGENTS events
+  const addToast = (message, type = 'info') => {
+    const id = Date.now() + Math.random();
+    setToasts(prev => [...prev, { id, message, type }]);
+    setTimeout(() => setToasts(prev => prev.filter(t => t.id !== id)), 4000);
+  };
 
   useEffect(() => {
     // Auto-scroll disabled per user request
@@ -38,16 +49,35 @@ function App() {
     if (data.status) setIncidentStatus(data.status);
     if (data.steps) setSteps(data.steps);
 
-    // Only append if it carries meaningful content (skip bare snapshots that
-    // replay old history without a message — those are handled via data.steps /
-    // data.status above).
-    if (event.event_type !== 'STATE_SNAPSHOT') {
+    // (OC) skip bare snapshot replays in the timeline — status/steps above
+    // already update the UI from them.
+    const isSnapshot = event.event_type === 'STATE_SNAPSHOT';
+
+    // Handle AWAITING_APPROVAL status from SSE
+    if (data.status === 'AWAITING_APPROVAL') {
+      setAwaitingApproval(true);
+      setIsTriggered(true);
+    }
+    if (data.status === 'RESOLVED' || data.status === 'ESCALATED') {
+      setAwaitingApproval(false);
+    }
+
+    if (!isSnapshot) {
       setHistory(prev => [...prev, {
         id: Date.now() + Math.random(),
         timestamp: event.timestamp || new Date().toISOString(),
         event_type: event.event_type,
         message: data.message || ''
       }]);
+    }
+
+    // OC6b: Toast notifications for APPROVED and SPAWNED_AGENTS
+    if (event.event_type === 'APPROVED') {
+      addToast('✅ Fix approved — remediation resumed', 'success');
+    }
+    if (event.event_type === 'SPAWNED_AGENTS') {
+      const agentNames = data.spawned_agents?.join(', ') || 'additional agents';
+      addToast(`🔁 Scaling: spawned ${agentNames}`, 'info');
     }
 
     // Auto-unlock the trigger button when the pipeline reaches a terminal state
@@ -65,7 +95,7 @@ function App() {
     setHistory([]);
     setIsTriggered(true);
     setIncidentStatus('STARTING...');
-
+    setAwaitingApproval(false);
     if (MOCK_MODE) {
       // Mock mode logic omitted for brevity as API is used
     } else {
@@ -83,7 +113,7 @@ function App() {
           body: JSON.stringify({
             alert_type: 'HIGH_LATENCY',
             service: 'api-gateway',
-            severity: 'P1'
+            severity: severity
           })
         });
         connectSSE();
@@ -114,6 +144,52 @@ function App() {
     });
   };
 
+  const approveFix = async () => {
+    setIsApproving(true);
+    try {
+      await fetch(`${API_BASE}/api/approve-fix`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({})
+      });
+    } catch (err) {
+      console.error("Failed to approve fix", err);
+    } finally {
+      setIsApproving(false);
+    }
+  };
+
+  const simulateWebhook = async () => {
+    setIsTriggered(true);
+    setIncidentStatus('STARTING...');
+    setAwaitingApproval(false);
+    
+    if (MOCK_MODE) {
+      triggerIncident();
+      return;
+    }
+    
+    try {
+      await fetch(`${API_BASE}/api/webhooks/alert`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          alert_type: 'HIGH_LATENCY',
+          alert_name: 'API Gateway High Latency',
+          service: 'api-gateway',
+          component: 'api-gateway',
+          severity: severity,
+          source: 'pagerduty',
+          timestamp: new Date().toISOString()
+        })
+      });
+      connectSSE();
+    } catch (err) {
+      console.error("Failed to simulate webhook", err);
+      setIncidentStatus('ERROR');
+    }
+  };
+
   const getEventColorClass = (type) => {
     const map = {
       'INCIDENT_CREATED': 'color-info',
@@ -125,14 +201,19 @@ function App() {
       'REPLAN_TRIGGERED': 'color-warning',
       'PLAN_UPDATED': 'color-warning',
       'RESOLVED': 'color-success',
-      'ESCALATED': 'color-error'
+      'ESCALATED': 'color-error',
+      'AWAITING_APPROVAL': 'color-warning',
+      'APPROVED': 'color-info',
+      'SPAWNED_AGENTS': 'color-info'
     };
+    // Graceful fallback for unknown event types - OC2
     return map[type] || 'color-info';
   };
   
   const getStatusIcon = (status) => {
     if (status.includes('NORMAL') || status === 'RESOLVED') return 'check_circle';
     if (status === 'ESCALATED' || status.includes('ERROR')) return 'error';
+    if (status === 'AWAITING_APPROVAL') return 'warning';
     if (status === 'STARTING...') return 'pending';
     if (status === 'PLANNING' || status === 'INVESTIGATING' || status === 'DIAGNOSING' || status === 'REMEDIATING') return 'sync';
     return 'info';
@@ -205,13 +286,34 @@ function App() {
             <div className="status-badge">
               <span className="material-symbols-rounded" style={{
                 color: incidentStatus.includes('NORMAL') || incidentStatus === 'RESOLVED' ? 'var(--google-green)' : 
-                       incidentStatus === 'ESCALATED' ? 'var(--google-red)' : 'var(--google-blue)'
+                       incidentStatus === 'ESCALATED' ? 'var(--google-red)' :
+                       incidentStatus === 'AWAITING_APPROVAL' ? 'var(--google-yellow)' : 'var(--google-blue)'
               }}>
                 {getStatusIcon(incidentStatus)}
               </span>
               {incidentStatus}
             </div>
           </div>
+
+          {/* AWAITING_APPROVAL Banner - OC1 */}
+          {awaitingApproval && (
+            <div className="approval-banner">
+              <span className="material-symbols-rounded">warning</span>
+              <span>Remediation requires human approval — confidence below threshold or action not in allow-list</span>
+              <button 
+                className="btn-approve" 
+                onClick={approveFix}
+                disabled={isApproving}
+              >
+                {isApproving ? (
+                  <span className="material-symbols-rounded" style={{ animation: 'spin 2s linear infinite' }}>hourglass_empty</span>
+                ) : (
+                  <span className="material-symbols-rounded">check_circle</span>
+                )}
+                {isApproving ? 'Approving...' : 'Approve Fix'}
+              </button>
+            </div>
+          )}
 
           <div className="flowchart-container">
             <div className="flowchart-inner">
@@ -266,6 +368,35 @@ function App() {
             </button>
           </div>
 
+          {/* Severity Selector - OC3 */}
+          <div className="severity-selector">
+            <span className="severity-label">Severity:</span>
+            <div className="severity-buttons">
+              {['P1', 'P2', 'P3'].map(s => (
+                <button
+                  key={s}
+                  className={`severity-btn ${severity === s ? 'active' : ''}`}
+                  onClick={() => setSeverity(s)}
+                  disabled={isTriggered}
+                >
+                  {s}
+                </button>
+              ))}
+            </div>
+          </div>
+
+          {/* Webhook Demo Button - OC4 */}
+          <div className="webhook-demo">
+            <button 
+              className="btn-secondary webhook-btn" 
+              onClick={simulateWebhook}
+              disabled={isTriggered}
+            >
+              <span className="material-symbols-rounded">webhook</span>
+              Simulate PagerDuty Alert
+            </button>
+          </div>
+
           {isTriggered && (
             <div className="failure-buttons">
               <button className="btn-secondary" onClick={() => injectFailure('LOG_SOURCE_UNAVAILABLE')}>
@@ -301,6 +432,15 @@ function App() {
       {/* <div className="credibility-strip">
         Powered by <strong>Antigravity Agent</strong>
       </div> */}
+      </div>
+
+      {/* Toast notifications for APPROVED / SPAWNED_AGENTS */}
+      <div className="toast-container">
+        {toasts.map(toast => (
+          <div key={toast.id} className={`toast toast-${toast.type}`}>
+            <span>{toast.message}</span>
+          </div>
+        ))}
       </div>
       
       <style>{`

@@ -38,7 +38,13 @@ class RemediatorGuardrail:
             ...
     """
 
-    def check(self, action: str, confidence: float) -> dict[str, Any]:
+    def check(self, action: str, confidence: float,
+              threshold_override: float | None = None) -> dict[str, Any]:
+        """threshold_override: severity profiles set their own bar
+        (P1 acts fast at 0.60, P3 wants 0.85 certainty). Falls back to the
+        global AUTO_EXECUTE_THRESHOLD."""
+        threshold = (AUTO_EXECUTE_THRESHOLD if threshold_override is None
+                     else threshold_override)
         """
         Returns:
             { "allowed": bool, "reason": str|None, "message": str,
@@ -51,7 +57,7 @@ class RemediatorGuardrail:
                 "reason":     REASON_DISALLOWED_ACTION,
                 "action":     action,
                 "confidence": confidence,
-                "threshold":  AUTO_EXECUTE_THRESHOLD,
+                "threshold":  threshold,
                 "allowlist":  sorted(ALLOWED_ACTIONS),
                 "message": (
                     f"Action '{action}' is not in the auto-execute allow-list "
@@ -59,17 +65,17 @@ class RemediatorGuardrail:
                 ),
             }
 
-        if confidence < AUTO_EXECUTE_THRESHOLD:
+        if confidence < threshold:
             return {
                 "allowed":    False,
                 "reason":     REASON_LOW_CONFIDENCE,
                 "action":     action,
                 "confidence": confidence,
-                "threshold":  AUTO_EXECUTE_THRESHOLD,
+                "threshold":  threshold,
                 "allowlist":  sorted(ALLOWED_ACTIONS),
                 "message": (
                     f"Confidence {confidence:.2f} is below the auto-execute "
-                    f"threshold {AUTO_EXECUTE_THRESHOLD:.2f}. Human approval required."
+                    f"threshold {threshold:.2f}. Human approval required."
                 ),
             }
 
@@ -78,7 +84,7 @@ class RemediatorGuardrail:
             "reason":     None,
             "action":     action,
             "confidence": confidence,
-            "threshold":  AUTO_EXECUTE_THRESHOLD,
+            "threshold":  threshold,
             "allowlist":  sorted(ALLOWED_ACTIONS),
             "message":    f"Action '{action}' approved for auto-execution (confidence={confidence:.2f}).",
         }

@@ -1,20 +1,40 @@
-"""Deterministic orchestrator state machine — owned by Muse Spark.
+"""Deterministic orchestrator — GENERIC PLAN-GRAPH EXECUTOR.
 
-NOT an LLM. Routes AgentBackend calls, detects failures, replans, escalates.
-FreeBuff swaps StubBackend -> real backend in main.py; this file is untouched.
+NOT an LLM. Executes whatever graph the Planner produces:
+  - topological dispatch by step.dependencies (not a hardcoded pipeline)
+  - ready steps run concurrently (asyncio.gather)
+  - per-agent dispatch table; dependency outputs feed downstream agents
+  - loop optimization: RETRY a failed step before burning a replan
+    (step_retries budget) — replanning rebuilds the whole graph and costs
+    a Planner round trip; a retry is one cheap agent call
+  - dynamic scaling: when a step exhausts retries, the Planner is asked to
+    propose ADDITIONAL agents (SPAWNED_AGENTS event) instead of the loop
+    just dying — the swarm grows under pressure
+  - severity profiles (severity.py) change model tier, budgets, guardrail
+    threshold, and plan shape per P1/P2/P3
+  - completion verification: every plan step must end COMPLETED or be
+    dropped by a newer plan version; otherwise escalate
+  - guardrail (guardrails.py) hard-gates the Remediator; a block moves the
+    incident to AWAITING_APPROVAL and the task parks on an asyncio.Event
+    until POST /api/approve-fix resumes or denies it
 
-Flow: PLANNING -> INVESTIGATING (parallel Log+Metrics) -> DIAGNOSING
-     -> REMEDIATING -> RESOLVED | ESCALATED. Replan loop capped at
-     MAX_PLAN_VERSIONS; remediation capped at MAX_REMEDIATION_ATTEMPTS.
+Flow: PLANNING -> EXECUTE(plan graph) --failure--> retry -> replan/SPAWN
+      --diagnosis--> guardrail --> [AWAITING_APPROVAL] --> REMEDIATING
+      -> verify (tool-level) -> RESOLVED | ESCALATED
 """
 import asyncio
+import os
+import time
 from typing import Awaitable, Callable
 
 from . import state as store
 from .agents.interface import AgentBackend, AgentResult, PlanResult, PlanStep, safe_get
 from .guardrails import RemediatorGuardrail
+from .severity import get_profile
 
 EmitFn = Callable[[dict], Awaitable[None]]
+
+APPROVAL_TIMEOUT_SECONDS = 120
 
 
 async def _emit(emit: EmitFn | None, event_type: str, incident: dict, message: str, extra: dict | None = None):
@@ -39,7 +59,8 @@ async def _emit(emit: EmitFn | None, event_type: str, incident: dict, message: s
 
 class StubBackend:
     """Same signatures as AgentBackend. Returns contract-shaped mock data
-    (ARCHITECTURE.md §3) and honors injected failures."""
+    (ARCHITECTURE.md §3), honors injected failures, and produces
+    severity-shaped plans so the graph executor is demonstrable in stub mode."""
 
     def __init__(self, failures: list | None = None):
         self._static_failures = failures or []
@@ -66,19 +87,50 @@ class StubBackend:
         # v1 is ALWAYS the full plan — degradation only happens on replan,
         # so the dashboard visibly shows FAILED -> REPLAN -> degraded plan.
         degraded = "failed" in context.lower()
-        steps = []
-        if not degraded:
-            steps.append(PlanStep("S1", "LogAnalyzer", "Fetch and analyze api-gateway logs", []))
+        scale_up = "SPAWN" in context.upper()
+        sev = (alert.get("severity") or "P2").upper()
+        compact = sev == "P3" or "COMPACT" in context.upper()
+        # Parse which agents failed from the replan context: "... failed
+        # steps ['LogAnalyzer']." — scaling must never re-add a FAILED agent
+        # (with the log source down, spawning more log readers cannot help;
+        # the correct move is degrading, and that's a judge-worthy insight).
+        failed_names: list[str] = []
+        if "failed steps [" in context:
+            seg = context.split("failed steps [", 1)[1].split("]", 1)[0]
+            failed_names = [x.strip().strip("'\"") for x in seg.split(",") if x.strip()]
+        steps: list[PlanStep] = []
+        if scale_up and failed_names and "LogAnalyzer" not in failed_names \
+                and "MetricsAgent" not in failed_names:
+            # Swarm scaling for an UNKNOWN failed agent: add a second opinion.
+            steps.append(PlanStep("SX1", "LogAnalyzer",
+                                  "Spawned: second-opinion log scan", []))
+        if degraded:
+            # Drop the FAILED investigator, keep the healthy one.
+            steps.append(PlanStep("S1", "MetricsAgent",
+                                  "Fetch metrics (log source unavailable)", []))
+        elif compact:
+            steps.append(PlanStep("S1", "MetricsAgent",
+                                  "Fetch key metrics (compact plan)", []))
+        else:
+            # P1/P2 full: BOTH investigators in parallel.
+            steps.append(PlanStep("S1", "LogAnalyzer",
+                                  "Fetch and analyze api-gateway logs", []))
+            steps.append(PlanStep("S2", "MetricsAgent",
+                                  "Fetch CPU/memory/latency metrics", []))
         steps += [
-            PlanStep("S2", "MetricsAgent", "Fetch CPU/memory/latency metrics", []),
-            PlanStep(
-                "S3", "Diagnostician", "Correlate findings into root cause",
-                ["S2"] if degraded else ["S1", "S2"],
-            ),
+            PlanStep("S3", "Diagnostician", "Correlate findings into root cause",
+                     [s.id for s in steps]),
             PlanStep("S4", "Remediator", "Execute recommended fix", ["S3"]),
         ]
-        return PlanResult(steps, "Parallel investigation, then correlate and remediate."
-                          + (" (degraded: logs unavailable)" if degraded else ""))
+        # Renumber so ids are tidy (S1..Sn) and dependencies stay consistent.
+        id_map = {old.id: f"S{i+1}" for i, old in enumerate(steps)}
+        for s in steps:
+            s.id = id_map[s.id]
+            s.depends_on = [id_map[d] for d in s.depends_on]
+        return PlanResult(steps, "Severity-shaped plan."
+                          + (" (compact P3)" if compact else "")
+                          + (" (spawned extra agent)" if scale_up else "")
+                          + (" (degraded)" if degraded else ""))
 
     async def analyze_logs(self, service: str, time_window_minutes: int = 30) -> AgentResult:
         if "LOG_SOURCE_UNAVAILABLE" in self.failures:
@@ -101,7 +153,7 @@ class StubBackend:
             "confidence": 0.92})
 
     async def diagnose(self, log_findings: dict, metrics_findings: dict) -> AgentResult:
-        conf = 0.90 if log_findings else 0.70
+        conf = 0.90 if (log_findings and metrics_findings) else (0.75 if (log_findings or metrics_findings) else 0.4)
         return AgentResult(True, "Diagnostician", f"Memory-leak diagnosis (conf {conf})", {
             "root_cause": "Memory leak in deploy v2.3.1 causing OOM + cascading latency",
             "confidence": conf,
@@ -142,32 +194,26 @@ async def _call_plan(backend_coro, incident_id: str, backend=None) -> PlanResult
 
 
 async def _call(backend_coro, incident_id: str, agent: str, step_id: str = "",
-            backend=None) -> AgentResult:
+                backend=None) -> AgentResult:
     """One agent call with timeout. Never raises — failures become AgentResult."""
-    import time as _time
-    _agent_t0 = _time.monotonic()
     timeout = getattr(backend, "timeout", store.AGENT_TIMEOUT_SECONDS)
     try:
         res: AgentResult = await asyncio.wait_for(backend_coro, timeout=timeout)
-        _record_agent_timing(incident_id, agent, _agent_t0,
-                             (_time.monotonic() - _agent_t0) * 1000)
         store.add_history(incident_id,
                           "AGENT_COMPLETED" if res.ok else "AGENT_FAILED",
                           f"{agent} {step_id} {'ok' if res.ok else res.error_code}",
                           {"agent": agent})
         return res
     except asyncio.TimeoutError:
-        _record_agent_timing(incident_id, agent, _agent_t0,
-                             (_time.monotonic() - _agent_t0) * 1000)
         store.add_history(incident_id, "AGENT_FAILED", f"{agent} {step_id} TIMEOUT",
                           {"agent": agent})
-        return AgentResult(False, agent, "timeout", error_code="TIMEOUT", error="30s timeout")
+        return AgentResult(False, agent, "timeout", error_code="TIMEOUT", error="agent timeout")
 
 
 def _set_step_status(incident_id: str, agent: str, status: str, summary: str = "") -> None:
     """Update the plan step for `agent` so the dashboard status chips live-track
     each agent (PENDING -> IN_PROGRESS -> COMPLETED/FAILED). Frontend
-    (aegis/frontend/src/App.jsx) reads these per-step statuses directly."""
+    (frontend/src/App.jsx) reads these per-step statuses directly."""
     def _fn(s):
         for step in s["plan"]["steps"]:
             if step["agent"] == agent:
@@ -184,22 +230,196 @@ def _snapshot_plan(plan: PlanResult, version: int) -> dict:
             "steps": [s.__dict__ for s in plan.steps]}
 
 
-def _record_agent_timing(incident_id: str, agent: str, started_at: float, wall_clock_ms: float):
-    """Persist per-agent wall-clock timing into telemetry.agent_timings."""
-    from datetime import datetime, timezone
-    def _fn(s):
-        s["telemetry"]["agent_timings"][agent] = {
-            "wall_clock_ms": round(wall_clock_ms, 1),
-        }
-    store._update(incident_id, _fn)
+# ── agent dispatch: how the executor runs ONE step of ANY plan ───────────────
+
+async def _dispatch_step(backend: AgentBackend, incident_id: str, step,
+                         results: dict, service: str, emit: EmitFn,
+                         approved: bool = False) -> AgentResult:
+    """Run one plan step by agent name. Works with PlanStep objects OR dicts
+    (the Planner path may give either). Dependency outputs are already in
+    `results` (agent -> AgentResult); each agent gets what it consumes.
+    approved=True: a human already approved via dashboard — guardrail is
+    recorded as overridden, not re-checked."""
+    agent = step.get("agent") if isinstance(step, dict) else step.agent
+    sid = step.get("id", "?") if isinstance(step, dict) else step.id
+    if agent == "LogAnalyzer":
+        return await _call(backend.analyze_logs(service), incident_id, agent, sid, backend)
+    if agent == "MetricsAgent":
+        return await _call(backend.analyze_metrics(service), incident_id, agent, sid, backend)
+    if agent == "Diagnostician":
+        # Feed it whatever investigation results exist (partial-tolerant).
+        log_f = results.get("LogAnalyzer").data if results.get("LogAnalyzer") else {}
+        met_f = results.get("MetricsAgent").data if results.get("MetricsAgent") else {}
+        return await _call(backend.diagnose(log_f, met_f), incident_id, agent, sid, backend)
+    if agent == "Remediator":
+        diag = results.get("Diagnostician")
+        diag_data = diag.data if diag else {}
+        action = safe_get(diag_data, "recommended_action", default="rollback")
+        details = safe_get(diag_data, "action_details", default={}) or {}
+        action_type = str(details.get("type", action)).upper()
+        conf = float(safe_get(diag_data, "confidence", default=0.0) or 0.0)
+        if approved:
+            # Human approved via /api/approve-fix: do not re-check. The
+            # approval (and the guardrail reason it overrode) is in history.
+            res = await _call(backend.remediate(action_type, service, details),
+                              incident_id, agent, sid, backend)
+            store._update(incident_id, lambda s: s["remediation"].update(
+                {"action": action_type, "result": res.summary if res.ok else res.error}))
+            return res
+        # GUARDRAIL: hard, code-enforced gate with the severity's threshold.
+        threshold = store.get_active_profile(incident_id).get("guardrail_threshold", 0.70)
+        g = RemediatorGuardrail().check(action=action_type, confidence=conf,
+                                        threshold_override=threshold)
+        if not g["allowed"]:
+            store._update(incident_id, lambda s: s.update(
+                status="AWAITING_APPROVAL", guardrail=g))
+            st = store.get_state(incident_id)
+            store.add_history(incident_id, "GUARDRAIL_BLOCKED", g["message"],
+                              {"reason": g["reason"], "action": action_type,
+                               "confidence": conf})
+            await _emit(emit, "AWAITING_APPROVAL", st, g["message"],
+                        {"guardrail": g})
+            raise _ApprovalNeeded(g)
+        res = await _call(backend.remediate(action_type, service, details),
+                          incident_id, agent, sid, backend)
+        # Keep remediation bookkeeping alive for the dashboard (attempts count
+        # increments on every execute attempt, success or failure).
+        store._update(incident_id, lambda s: s["remediation"].update(
+            {"action": action_type,
+             "attempts": s["remediation"].get("attempts", 0) + 1,
+             "result": res.summary if res.ok else res.error}))
+        return res
+    # Unknown agent name in the plan: honest failure, not a silent skip.
+    return AgentResult(False, agent, "unknown agent in plan",
+                       error_code="UNKNOWN_AGENT",
+                       error=f"plan names agent '{agent}' which has no dispatcher")
+
+
+class _ApprovalNeeded(Exception):
+    """Raised by the Remediator dispatch when the guardrail blocks. Carries
+    the guardrail result; _execute_plan_graph converts it to a parked
+    AWAITING_APPROVAL wait."""
+    def __init__(self, guard: dict):
+        self.guard = guard
+        super().__init__(guard.get("reason") or "approval needed")
+
+
+async def _execute_plan_graph(incident_id: str, backend: AgentBackend, emit: EmitFn,
+                              plan_steps: list, service: str,
+                              profile: dict) -> tuple[dict, list]:
+    """Dependency-driven executor.
+
+    Loop (each iteration = one 'wave'):
+      1. collect steps whose deps are all COMPLETED -> run concurrently
+      2. a failed step: retry while step_retries < profile['max_retries']
+         (LOOP OPTIMIZATION: retry is cheaper than replan)
+      3. retries exhausted -> return (results, [failed_agents]) so the caller
+         can replan / scale the swarm
+      4. completion verification: graph done but steps left PENDING (deps
+         never satisfied) -> that's a broken plan, escalate upstream
+
+    Returns (results, failed_agents).
+    Raises _ApprovalNeeded upward after parking (see below).
+    """
+    results: dict[str, AgentResult] = {}
+    # Normalize steps: accept PlanStep objects or dicts (depends_on may be
+    # missing in dicts from LLM plan parsing).
+    norm = []
+    for s in plan_steps:
+        if isinstance(s, dict):
+            norm.append(type("S", (object,), {"id": s.get("id"), "agent": s.get("agent"),
+                                              "depends_on": s.get("depends_on") or []})())
+        else:
+            norm.append(s)
+    steps = {s.id: s for s in norm}
+    step_status = {sid: "PENDING" for sid in steps}
+    step_retries = {sid: 0 for sid in steps}
+    failed_agents: list[str] = []
+
+    while True:
+        # wave = every step whose deps are done and hasn't run successfully
+        ready = [s for sid, s in steps.items()
+                 if step_status[sid] in ("PENDING", "RETRY")
+                 and all(step_status.get(d) == "COMPLETED" for d in s.depends_on)]
+
+        if not ready:
+            break  # nothing runnable: done, blocked, or failed out
+
+        # mark + run the whole wave concurrently
+        for s in ready:
+            _set_step_status(incident_id, s.agent, "IN_PROGRESS")
+            step_status[s.id] = "RUNNING"
+        wave = [_dispatch_step(backend, incident_id, s, results, service, emit)
+                for s in ready]
+        outcomes = await asyncio.gather(*wave, return_exceptions=True)
+
+        approved_seen = False
+        for s, out in zip(ready, outcomes):
+            if isinstance(out, _ApprovalNeeded):
+                # Park the incident; the approve endpoint sets the event.
+                approved = await store.wait_approval(
+                    incident_id, timeout=APPROVAL_TIMEOUT_SECONDS)
+                if not approved:
+                    return results, [s.agent]  # timeout/denied -> caller escalates
+                # APPROVED: re-run this step; guardrail is overridden by the
+                # human decision (recorded in history by /api/approve-fix).
+                approved_seen = True
+                store._update(incident_id, lambda x: x.update(status="REMEDIATING"))
+                res = await _dispatch_step(backend, incident_id, s, results,
+                                           service, emit, approved=True)
+            elif isinstance(out, Exception):
+                res = AgentResult(False, s.agent, "dispatch crash",
+                                  error_code="DISPATCH_ERROR", error=str(out))
+            else:
+                res = out
+
+            if res.ok:
+                results[s.agent] = res
+                step_status[s.id] = "COMPLETED"
+                _set_step_status(incident_id, s.agent, "COMPLETED", res.summary)
+            elif approved_seen:
+                # An approved step failed on execution: no more auto-retries
+                # beyond the normal budget; treat as ordinary failure.
+                step_status[s.id] = "FAILED"
+                _set_step_status(incident_id, s.agent, "FAILED", res.summary)
+                if s.agent not in failed_agents:
+                    failed_agents.append(s.agent)
+            else:
+                # LOOP OPTIMIZATION: retry before replan (retry = one cheap
+                # agent call; replan = full Planner round trip + graph rebuild).
+                if step_retries[s.id] < profile.get("max_retries", 1):
+                    step_retries[s.id] += 1
+                    step_status[s.id] = "RETRY"
+                    store.add_history(incident_id, "STEP_RETRY",
+                                      f"{s.agent} retry {step_retries[s.id]}/"
+                                      f"{profile['max_retries']} ({res.error_code})",
+                                      {"agent": s.agent})
+                else:
+                    step_status[s.id] = "FAILED"
+                    _set_step_status(incident_id, s.agent, "FAILED", res.summary)
+                    store.add_history(incident_id, "FAILURE_DETECTED",
+                                      f"{s.agent} failed after "
+                                      f"{step_retries[s.id]} retries ({res.error_code})",
+                                      {"agent": s.agent})
+                    if s.agent not in failed_agents:
+                        failed_agents.append(s.agent)
+
+    # COMPLETION VERIFICATION: any step not COMPLETED and not dropped means
+    # the plan could not be fully executed (deps blocked by failures).
+    incomplete = [s.agent for sid, s in steps.items()
+                  if step_status[sid] != "COMPLETED" and s.agent not in failed_agents]
+    if incomplete and not failed_agents:
+        # deps never satisfied although nothing "failed" — plan is unsatisfiable
+        store.add_history(incident_id, "PLAN_INCOMPLETE",
+                          f"steps with unsatisfiable deps: {incomplete}")
+        failed_agents.extend(incomplete)
+    return results, failed_agents
 
 
 async def run_incident(incident_id: str, backend: AgentBackend, emit: EmitFn | None = None):
-    """Full lifecycle. Callable with StubBackend today, real backend later.
-
-    Wall-clock guard: checks INCIDENT_WALL_CLOCK_LIMIT at each phase boundary
-    and escalates instead of running past it (bounded autonomy, RISKS.md #6).
-    """
+    """Full lifecycle over GENERIC plan graphs. Severity profile shapes
+    budgets, model tier, and guardrail threshold. Callable with StubBackend
+    or RealBackend."""
     import time as _time
     _t0 = _time.monotonic()
 
@@ -213,188 +433,167 @@ async def run_incident(incident_id: str, backend: AgentBackend, emit: EmitFn | N
 
     st = store.get_state(incident_id)
     alert, service = st["alert"], st["alert"]["service"]
-    # Give the backend a live reference to the incident so active_failures are
-    # read from the store on every agent call (supports mid-run injection).
+    # (OC) Give the backend a live reference to the incident so
+    # active_failures are read from the store on every agent call (mid-run
+    # injection works); fallback: snapshot once for non-stub backends.
     if hasattr(backend, "_incident_id"):
         backend._incident_id = incident_id
     elif hasattr(backend, "failures"):
-        # Fallback for non-stub backends: snapshot once at startup.
         backend.failures = st.get("active_failures", [])
+    severity, profile = get_profile(alert.get("severity"))
+    store.set_active_profile(incident_id, profile)
+    # Per-incident model tier (single-active-incident server; documented).
+    os.environ["AEGIS_MODEL_TIER"] = profile["model_tier"]
+
+    async def _replan(version: int, reason: str, scale_up: bool) -> PlanResult | None:
+        """One Planner round trip. scale_up=True asks the Planner to propose
+        ADDITIONAL agents (swarm scaling) instead of just dropping the failed
+        step."""
+        ctx = f"Previous plan v{version}: {reason}. "
+        if scale_up:
+            ctx += ("The failed step exhausted its retries. Propose a plan that "
+                    "SPAWNS ADDITIONAL or alternative agents to cross-check the "
+                    "failed investigation (e.g. add another investigator in "
+                    "parallel). You may add steps using any available agent. ")
+        else:
+            ctx += ("Replan using available data only. Do NOT include a step "
+                    "for the agent that failed. COMPACT plan if severity is P3.")
+        return await _call_plan(backend.create_plan(alert, ctx), incident_id, backend)
+
+    async def _apply_plan(version: int, plan: PlanResult, carried: dict | None = None):
+        def _fn(s):
+            snap = _snapshot_plan(plan, version)
+            if carried:
+                for stp in snap["steps"]:
+                    if stp["agent"] in carried:
+                        stp["status"] = carried[stp["agent"]]
+            s["plan"].update(snap)
+            s["plan_version_history"].append(snap)
+            s.update(retry_count=s.get("retry_count", 0) + 1,
+                     status="INVESTIGATING")
+        store._update(incident_id, _fn)
+        st = store.get_state(incident_id)
+        store.add_history(incident_id, "PLAN_UPDATED" if version > 1 else "PLAN_CREATED",
+                          f"v{version}: {len(plan.steps)} steps")
+        await _emit(emit, "PLAN_UPDATED" if version > 1 else "PLAN_CREATED", st,
+                    f"Plan v{version}: {len(plan.steps)} steps")
+        return st
 
     # --- PLANNING (v1) ---
     await _emit(emit, "AGENT_STARTED", st, "Planner Agent creating investigation plan...")
-    plan = await _call_plan(backend.create_plan(alert), incident_id, backend)
+    plan = await _call_plan(backend.create_plan(
+        alert, f"SEVERITY {severity} ({profile['label']}). {profile['plan_hint']}"),
+        incident_id, backend)
     if plan is None:
         store.set_status(incident_id, "ESCALATED", "planner failed")
         await _emit(emit, "ESCALATED", store.get_state(incident_id), "Planner failed. Escalated.")
         return
     version = 1
-    store._update(incident_id, lambda s: (
-        s["plan"].update(_snapshot_plan(plan, version)),
-        s["plan_version_history"].append(_snapshot_plan(plan, version)),
-        s.update(status="INVESTIGATING")))
-    st = store.get_state(incident_id)
-    store.add_history(incident_id, "PLAN_CREATED", f"v1: {len(plan.steps)} steps")
-    await _emit(emit, "PLAN_CREATED", st, f"Plan v1: {len(plan.steps)} steps")
+    await _apply_plan(version, plan)
     if await _out_of_time():
         return
 
-    # --- INVESTIGATING (parallel) ---
-    st = store.get_state(incident_id)
-    await _emit(emit, "AGENT_STARTED", st, "LogAnalyzer + MetricsAgent investigating in parallel...")
-    _set_step_status(incident_id, "LogAnalyzer", "IN_PROGRESS")
-    _set_step_status(incident_id, "MetricsAgent", "IN_PROGRESS")
-    log_res, met_res = await asyncio.gather(
-        _call(backend.analyze_logs(service), incident_id, "LogAnalyzer", "S1", backend),
-        _call(backend.analyze_metrics(service), incident_id, "MetricsAgent", "S2", backend))
-    _set_step_status(incident_id, "LogAnalyzer",
-                     "COMPLETED" if log_res.ok else "FAILED", log_res.summary)
-    _set_step_status(incident_id, "MetricsAgent",
-                     "COMPLETED" if met_res.ok else "FAILED", met_res.summary)
+    # --- EXECUTE + REPLAN LOOP (bounded) ---
+    results: dict = {}
+    while True:
+        results, failed = await _execute_plan_graph(
+            incident_id, backend, emit, plan.steps, service, profile)
 
-    st = store.get_state(incident_id)
-    await _emit(emit,
-                "AGENT_COMPLETED" if log_res.ok else "AGENT_FAILED", st,
-                f"LogAnalyzer: {log_res.summary}",
-                {"active_agent": "LogAnalyzer"})
-    await _emit(emit,
-                "AGENT_COMPLETED" if met_res.ok else "AGENT_FAILED", st,
-                f"MetricsAgent: {met_res.summary}",
-                {"active_agent": "MetricsAgent"})
+        if not failed:
+            break  # graph fully executed
 
-    # --- Replan on investigation failure (degraded mode) ---
-    if not log_res.ok or not met_res.ok:
-        failed = [a for a, r in (("LogAnalyzer", log_res), ("MetricsAgent", met_res)) if not r.ok]
-        store.add_history(incident_id, "FAILURE_DETECTED", f"{failed} failed")
-        store.add_history(incident_id, "REPLAN_TRIGGERED",
-                          f"{'/'.join(failed)} failed — switching to degraded mode")
-        st = store.get_state(incident_id)
-        await _emit(emit, "REPLAN_TRIGGERED", st,
-                    f"{'/'.join(failed)} failed — replanning with available data...")
-        if st["retry_count"] >= store.MAX_PLAN_VERSIONS - 1:
-            return await _escalate(incident_id, emit, "Replan budget exhausted during investigation")
-        ctx = (f"Previous plan v{version} failed: "
-               f"{[(a, r.error_code) for a, r in (('Log', log_res), ('Met', met_res)) if not r.ok]}. "
-               f"Replan using available data only.")
-        plan2 = await _call_plan(backend.create_plan(alert, ctx), incident_id, backend)
-        if plan2 is None:
-            return await _escalate(incident_id, emit, "Replan failed")
+        if await _out_of_time():
+            return
+
+        # Dynamic swarm scaling: FIRST exhaustion of a step -> ask the Planner
+        # for additional agents. SECOND exhaustion -> plain degraded replan.
+        # THIRD (budget gone) -> escalate. Each escalation of the loop is
+        # bounded by profile['max_plan_versions'].
+        if store.get_state(incident_id)["retry_count"] >= profile["max_plan_versions"] - 1:
+            return await _escalate(
+                incident_id, emit,
+                f"Replan budget exhausted ({profile['max_plan_versions']} plans); "
+                f"failed: {failed}")
+        scale_up = store.get_state(incident_id)["retry_count"] == 0
         version += 1
+        store.add_history(incident_id, "REPLAN_TRIGGERED",
+                          f"{failed} exhausted retries — replanning"
+                          + (" with swarm scaling" if scale_up else ""))
+        await _emit(emit, "REPLAN_TRIGGERED", store.get_state(incident_id),
+                    f"{failed} failed — replanning "
+                    + ("with additional agents" if scale_up else "with available data"))
+        carried = {a: "COMPLETED" for a, r in results.items() if r.ok}
+        new_plan = await _replan(version, f"failed steps {failed}", scale_up)
+        if new_plan is None:
+            return await _escalate(incident_id, emit, "Replan failed")
+        await _apply_plan(version, new_plan, carried)
+        # CRITICAL: actually execute the NEW graph on the next loop iteration
+        # (bug this fixes: executor kept re-running the old plan).
+        plan = new_plan
+        if scale_up:
+            added = [s.agent for s in new_plan.steps]
+            st = store.get_state(incident_id)
+            await _emit(emit, "SPAWNED_AGENTS", st,
+                        f"Swarm scaling: planner added/changed agents after {failed} failed",
+                        {"agents": added})
+        if await _out_of_time():
+            return
 
-        def _apply_plan2(s):
-            # Carry over earned statuses so the dashboard chips don't reset:
-            # MetricsAgent already COMPLETED in v1 stays COMPLETED in v2.
-            old = {st["agent"]: st["status"] for st in s["plan"]["steps"]}
-            snap = _snapshot_plan(plan2, version)
-            for st in snap["steps"]:
-                st["status"] = old.get(st["agent"], "PENDING")
-            s["plan"].update(snap)
-            s["plan_version_history"].append(snap)
-            s.update(retry_count=s["retry_count"] + 1, status="INVESTIGATING")
-
-        store._update(incident_id, _apply_plan2)
-        st = store.get_state(incident_id)
-        store.add_history(incident_id, "PLAN_UPDATED", f"v{version} degraded mode")
-        await _emit(emit, "PLAN_UPDATED", st, f"Plan v{version}: degraded mode, continuing...")
-
-    if await _out_of_time():
-        return
-    # --- DIAGNOSING ---
-    st = store.get_state(incident_id)
-    store._update(incident_id, lambda s: s.update(status="DIAGNOSING"))
-    st = store.get_state(incident_id)
-    await _emit(emit, "AGENT_STARTED", st, "Diagnostician correlating findings...")
-    log_find = log_res.data if log_res.ok else {}
-    met_find = met_res.data if met_res.ok else {}
-    _set_step_status(incident_id, "Diagnostician", "IN_PROGRESS")
-    diag = await _call(backend.diagnose(log_find, met_find), incident_id, "Diagnostician", "S3", backend)
-    _set_step_status(incident_id, "Diagnostician",
-                     "COMPLETED" if diag.ok else "FAILED", diag.summary)
-    st = store.get_state(incident_id)
-    if not diag.ok:
-        return await _escalate(incident_id, emit, "Diagnosis failed")
+    # --- RESULT EXTRACTION (works for ANY plan shape) ---
+    diag = results.get("Diagnostician")
+    if diag is None:
+        return await _escalate(incident_id, emit,
+                               "Executed plan produced no diagnosis (no Diagnostician result)")
     conf = safe_get(diag.data, "confidence", default=0.0)
     store._update(incident_id, lambda s: s.update(diagnosis=diag.data))
     await _emit(emit, "AGENT_COMPLETED", store.get_state(incident_id),
                 f"Root cause (conf {conf}): {safe_get(diag.data, 'root_cause', default='?')}")
+
+    # Guardrail may have parked us inside the graph (Remediator step).
+    st = store.get_state(incident_id)
+    if st["status"] == "AWAITING_APPROVAL":
+        await _emit(emit, "AWAITING_APPROVAL", st,
+                    safe_get(st, "guardrail", default={}).get("message", "approval required"),
+                    {"guardrail": st.get("guardrail")})
+        return  # task parks; approve-fix resumes via approval_event
+
     if conf < 0.5:
         return await _escalate(incident_id, emit, f"Diagnosis confidence {conf} too low")
 
-    if await _out_of_time():
-        return
-    # --- GUARDRAIL CHECK (hard gate, not a prompt instruction) ---
-    action = safe_get(diag.data, "recommended_action", default="rollback")
-    action_details = safe_get(diag.data, "action_details", default={}) or {}
-    action_type = str(action_details.get("type", action)).upper()
-
-    guard = RemediatorGuardrail()
-    guard_result = guard.check(action=action_type, confidence=conf)
-    if not guard_result["allowed"]:
-        # Persist the guardrail state so the frontend can show "Approve Fix?"
-        store._update(incident_id, lambda s: s.update(
-            status="AWAITING_APPROVAL",
-            guardrail=guard_result,
-        ))
-        st = store.get_state(incident_id)
-        store.add_history(incident_id, "GUARDRAIL_BLOCKED", guard_result["message"],
-                          {"reason": guard_result["reason"], "action": action_type,
-                           "confidence": conf})
-        await _emit(emit, "AWAITING_APPROVAL", st, guard_result["message"],
-                    {"guardrail": guard_result})
-        # NOTE: live approval flow (asyncio.Event wait) requires Person A to add
-        # a POST /api/approve-fix endpoint that sets a shared event. For now the
-        # state halts here visibly — judges see the guardrail firing, not a crash.
-        return
-
-    # --- REMEDIATING (up to 2 attempts) ---
-    for attempt in range(1, store.MAX_REMEDIATION_ATTEMPTS + 1):
+    # If the plan's Remediator step already ran (guardrail allowed it),
+    # verification has run too; finish up. If the graph ended right after
+    # approval, run remediation+verify here.
+    fix = results.get("Remediator")
+    if fix is None:
         if await _out_of_time():
             return
-        st = store.get_state(incident_id)
         store._update(incident_id, lambda s: s.update(status="REMEDIATING"))
-        await _emit(emit, "AGENT_STARTED", store.get_state(incident_id),
-                    f"Remediator attempt {attempt}: {action_type} on {service}...")
-        _set_step_status(incident_id, "Remediator", "IN_PROGRESS")
-        fix = await _call(backend.remediate(action_type, service, action_details),
+        action = safe_get(diag.data, "recommended_action", default="rollback")
+        details = safe_get(diag.data, "action_details", default={}) or {}
+        action_type = str(details.get("type", action)).upper()
+        fix = await _call(backend.remediate(action_type, service, details),
                           incident_id, "Remediator", "S4", backend)
-        _set_step_status(incident_id, "Remediator",
-                         "COMPLETED" if fix.ok else "FAILED", fix.summary)
-        store._update(incident_id, lambda s: s["remediation"].update(
-            {"action": action_type, "attempts": attempt,
-             "result": fix.summary if fix.ok else fix.error}))
         if not fix.ok:
-            st = store.get_state(incident_id)
-            await _emit(emit, "AGENT_FAILED", st, f"Remediation failed: {fix.error}")
-            if attempt < store.MAX_REMEDIATION_ATTEMPTS:
-                action_type = "RESTART" if action_type == "ROLLBACK" else "SCALE_UP"
-                store.add_history(incident_id, "REPLAN_TRIGGERED",
-                                  f"Trying alternative fix: {action_type}")
-                continue
-            return await _escalate(incident_id, emit,
-                                   f"Remediation failed after {attempt} attempts: {fix.error}")
-        # LATENCY + DETERMINISM: run verification directly against the
-        # simulated health check (tool-level), NOT via an LLM agent call.
-        # A health check is a tool's job in real SRE systems too; this removes
-        # a ~20-25s agent round trip AND makes verification non-flaky.
-        from .tools.simulated import dispatch as _tool_dispatch
-        import json as _json
-        raw = _tool_dispatch("verify_fix", {"service": service,
-                                            "check_type": "HEALTH_CHECK"})
-        vres = _json.loads(raw)
-        verify_ok = vres.get("status") == "success"
-        verify_summary = vres.get("result", "health check")
-        store.add_history(incident_id,
-                          "AGENT_COMPLETED" if verify_ok else "AGENT_FAILED",
-                          f"verify_fix (direct): {verify_summary}",
-                          {"agent": "Remediator"})
-        if verify_ok:
-            store._update(incident_id, lambda s: s.update(status="RESOLVED"))
-            st = store.get_state(incident_id)
-            store.add_history(incident_id, "RESOLVED", verify_summary)
-            await _emit(emit, "RESOLVED", st, f"RESOLVED: {verify_summary}")
-            return
-        if attempt == store.MAX_REMEDIATION_ATTEMPTS:
-            return await _escalate(incident_id, emit, "Verification failed after 2 attempts")
+            return await _escalate(incident_id, emit, f"Remediation failed: {fix.error}")
+
+    # Tool-level verification (deterministic, ~0s — see base.py history).
+    from .tools.simulated import dispatch as _tool_dispatch
+    import json as _json
+    raw = _tool_dispatch("verify_fix", {"service": service, "check_type": "HEALTH_CHECK"})
+    vres = _json.loads(raw)
+    verify_ok = vres.get("status") == "success"
+    verify_summary = vres.get("result", "health check")
+    store.add_history(incident_id,
+                      "AGENT_COMPLETED" if verify_ok else "AGENT_FAILED",
+                      f"verify_fix (direct): {verify_summary}",
+                      {"agent": "Remediator"})
+    if verify_ok:
+        store._update(incident_id, lambda s: s.update(status="RESOLVED"))
+        st = store.get_state(incident_id)
+        store.add_history(incident_id, "RESOLVED", verify_summary)
+        await _emit(emit, "RESOLVED", st, f"RESOLVED: {verify_summary}")
+        return
+    return await _escalate(incident_id, emit, f"Verification failed: {verify_summary}")
 
 
 async def run_incident_safe(incident_id: str, backend: AgentBackend, emit: EmitFn | None = None):

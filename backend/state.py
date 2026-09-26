@@ -3,6 +3,7 @@
 Single-active-incident model (hackathon scope) + JSON persistence after
 every transition, per ARCHITECTURE.md §2 / PROJECT_PLAN.md §2.
 """
+import asyncio
 import copy
 import json
 import os
@@ -37,6 +38,52 @@ VALID_STATUSES = {
 
 _lock = threading.Lock()
 _store: dict = {"active_id": None, "incidents": {}}
+
+# Per-incident severity profile + human-approval primitives.
+# approval: incident_id -> {"event": asyncio.Event, "approved": bool}
+# (event created lazily INSIDE the running loop so it binds to the right
+# event loop — creation at trigger time would bind to the request handler's
+# loop context, which is the same loop under uvicorn, but lazily is safer)
+_profiles: dict = {}
+_approvals: dict = {}
+
+
+def set_active_profile(incident_id: str, profile: dict) -> None:
+    _profiles[incident_id] = profile
+
+
+def get_active_profile(incident_id: str) -> dict:
+    return _profiles.get(incident_id, {})
+
+
+def approval_event(incident_id: str) -> asyncio.Event:
+    ent = _approvals.get(incident_id)
+    if ent is None:
+        ent = {"event": asyncio.Event(), "approved": False}
+        _approvals[incident_id] = ent
+    return ent["event"]
+
+
+async def wait_approval(incident_id: str, timeout: float) -> bool:
+    # Lazy-create: the waiter may run before anyone touched the entry.
+    ent = _approvals.setdefault(incident_id,
+                                {"event": asyncio.Event(), "approved": False})
+    try:
+        await asyncio.wait_for(ent["event"].wait(), timeout=timeout)
+        return ent["approved"]
+    except asyncio.TimeoutError:
+        return False
+
+
+def resolve_approval(incident_id: str, approved: bool) -> bool:
+    """Called by POST /api/approve-fix (or /deny). Returns True if there was
+    a pending approval to resolve."""
+    ent = _approvals.get(incident_id)
+    if ent is None:
+        return False
+    ent["approved"] = approved
+    ent["event"].set()
+    return True
 
 
 def _now() -> str:

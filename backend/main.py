@@ -57,7 +57,19 @@ def get_backend():
 class TriggerReq(BaseModel):
     alert_type: str = "HIGH_LATENCY"
     service: str = "api-gateway"
-    severity: str = "P1"
+    severity: str = "P1"  # P1|P2|P3 — drives the severity profile (see severity.py)
+
+
+class WebhookAlert(BaseModel):
+    """PagerDuty/Opsgenie-style ingestion: tolerate extra fields, map common
+    aliases. Extra JSON fields are accepted (model_config) and ignored."""
+    model_config = {"extra": "allow"}
+    alert_type: str | None = None
+    service: str | None = None
+    severity: str | None = None
+    alert_name: str | None = None      # PagerDuty alias
+    component: str | None = None       # Opsgenie alias
+    source: str = "webhook"
 
 
 class FailureReq(BaseModel):
@@ -101,7 +113,70 @@ async def trigger(req: TriggerReq):
     backend = get_backend()
     asyncio.create_task(run_incident(st["incident_id"], backend, _broadcast))
     return {"incident_id": st["incident_id"], "status": "PLANNING",
+            "severity": st["alert"]["severity"],
             "message": "Incident created. Planner Agent activated."}
+
+
+@app.post("/api/webhooks/alert")
+async def webhook_alert(req: WebhookAlert):
+    """Real-world ingestion seam: monitoring tools (PagerDuty, Opsgenie,
+    Grafana) POST alerts here. Maps their common field aliases, then runs
+    the exact same pipeline as the dashboard trigger."""
+    alert_type = req.alert_type or req.alert_name or "GENERIC_ALERT"
+    service = req.service or req.component or "unknown-service"
+    severity = (req.severity or "P2").upper()
+    # tolerate severity spellings like "critical" / "sev1"
+    if severity.startswith("CRIT") or severity in ("SEV1", "1"):
+        severity = "P1"
+    elif severity.startswith("WARN") or severity in ("SEV3", "3"):
+        severity = "P3"
+    elif severity.startswith("SEV2") or severity in ("2", "MAJOR"):
+        severity = "P2"
+    st = store.new_incident(alert_type, service, severity)
+    store.add_history(st["incident_id"], "WEBHOOK_INGESTED",
+                      f"alert received from {req.source}")
+    backend = get_backend()
+    asyncio.create_task(run_incident(st["incident_id"], backend, _broadcast))
+    return {"incident_id": st["incident_id"], "status": "PLANNING",
+            "severity": severity,
+            "message": f"Webhook alert ingested from {req.source}."}
+
+
+@app.post("/api/approve-fix")
+async def approve_fix():
+    """Human-in-the-loop: resume an incident parked in AWAITING_APPROVAL.
+    The parked orchestrator task wakes, re-checks the guardrail (now with
+    human override recorded in history) and executes the fix."""
+    st = store.get_state()
+    if not st:
+        raise HTTPException(404, "no active incident")
+    if st["status"] != "AWAITING_APPROVAL":
+        raise HTTPException(400, f"incident is {st['status']}, not AWAITING_APPROVAL")
+    resolved = store.resolve_approval(st["incident_id"], approved=True)
+    if not resolved:
+        raise HTTPException(409, "no pending approval object (incident may have timed out)")
+    store.add_history(st["incident_id"], "APPROVED",
+                      "human approved remediation via dashboard")
+    await _broadcast({"event_type": "APPROVED", "incident_id": st["incident_id"],
+                      "data": {"status": "REMEDIATING",
+                               "plan_version": st["plan"]["version"],
+                               "steps": st["plan"]["steps"],
+                               "message": "Human approved. Executing fix..."}})
+    return {"status": "ok", "incident_id": st["incident_id"],
+            "message": "Approval recorded; remediation resuming."}
+
+
+@app.post("/api/deny-fix")
+async def deny_fix():
+    """Deny: the parked task wakes, sees approved=False, escalates."""
+    st = store.get_state()
+    if not st or st["status"] != "AWAITING_APPROVAL":
+        raise HTTPException(400, "no incident awaiting approval")
+    store.resolve_approval(st["incident_id"], approved=False)
+    store.add_history(st["incident_id"], "DENIED",
+                      "human denied remediation via dashboard")
+    return {"status": "ok", "incident_id": st["incident_id"],
+            "message": "Denial recorded; incident will escalate."}
 
 
 @app.post("/api/inject-failure")

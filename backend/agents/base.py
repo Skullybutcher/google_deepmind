@@ -32,6 +32,7 @@ import json
 import os
 
 from .interface import AgentResult, PlanResult, PlanStep
+from .. import state as store  # live failure-flag reads (OC's mid-run inject)
 
 AGENT_ID = "antigravity-preview-09-2026"
 AGENT_TIMEOUT = 120.0
@@ -275,13 +276,29 @@ def _to_plan_step(raw: dict, idx: int, prev_ids: list) -> PlanStep:
 
 class RealBackend:
     """AgentBackend over the Interactions API. Keeps interaction/env ids per
-    agent for native chaining; pass failures through to the executor."""
+    agent for native chaining; failures are read LIVE from the incident state
+    (OC's mid-run injection property) with a snapshot fallback."""
 
     def __init__(self, failures=None, exec_fn=None):
-        self.failures = failures or []
+        self._static_failures = failures or []
+        self._incident_id: str | None = None
         self.exec_fn = exec_fn
         self.chain: dict = {}  # agent -> {"interaction_id","environment_id"}
         self.timeout = 150.0  # real agent turns need headroom (spike: ~11-17s/call)
+
+    @property
+    def failures(self) -> list:
+        """Live read: mid-run /api/inject-failure takes effect on the NEXT
+        agent call (OC's feature, ported to RealBackend)."""
+        if self._incident_id:
+            st = store.get_state(self._incident_id)
+            if st:
+                return st.get("active_failures", [])
+        return self._static_failures
+
+    @failures.setter
+    def failures(self, value: list):
+        self._static_failures = value
 
     def _exec(self, name: str, args: dict) -> str:
         if name == "fetch_logs" and "LOG_SOURCE_UNAVAILABLE" in self.failures:

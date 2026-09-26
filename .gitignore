@@ -8,3 +8,7 @@ TODO.md
 .venv
 AGENTS_SYNC.md
 firebase-debug.log
+*.full
+*.orig
+App.test.jsx
+backend/severities.py
