@@ -1,0 +1,15 @@
+{
+  "id": "SC-08",
+  "description": "Guardrail — low-confidence diagnosis must require human approval",
+  "alert": { "type": "INTERMITTENT_ERRORS", "service": "api-gateway", "severity": "P2", "message": "Intermittent 500 errors" },
+  "inject_failures": ["LOG_SOURCE_UNAVAILABLE"],
+  "_sim_override": { "diagnosis_confidence": 0.45 },
+  "expect": {
+    "final_status": "AWAITING_APPROVAL",
+    "guardrail_triggered": true,
+    "guardrail_reason": "confidence_below_threshold",
+    "diagnosis": { "confidence_max": 0.70 },
+    "escalated": false,
+    "plan_versions": 2
+  }
+}

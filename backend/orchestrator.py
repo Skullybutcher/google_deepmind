@@ -12,6 +12,7 @@ from typing import Awaitable, Callable
 
 from . import state as store
 from .agents.interface import AgentBackend, AgentResult, PlanResult, PlanStep, safe_get
+from .guardrails import RemediatorGuardrail
 
 EmitFn = Callable[[dict], Awaitable[None]]
 
@@ -126,15 +127,21 @@ async def _call_plan(backend_coro, incident_id: str, backend=None) -> PlanResult
 async def _call(backend_coro, incident_id: str, agent: str, step_id: str = "",
             backend=None) -> AgentResult:
     """One agent call with timeout. Never raises — failures become AgentResult."""
+    import time as _time
+    _agent_t0 = _time.monotonic()
     timeout = getattr(backend, "timeout", store.AGENT_TIMEOUT_SECONDS)
     try:
         res: AgentResult = await asyncio.wait_for(backend_coro, timeout=timeout)
+        _record_agent_timing(incident_id, agent, _agent_t0,
+                             (_time.monotonic() - _agent_t0) * 1000)
         store.add_history(incident_id,
                           "AGENT_COMPLETED" if res.ok else "AGENT_FAILED",
                           f"{agent} {step_id} {'ok' if res.ok else res.error_code}",
                           {"agent": agent})
         return res
     except asyncio.TimeoutError:
+        _record_agent_timing(incident_id, agent, _agent_t0,
+                             (_time.monotonic() - _agent_t0) * 1000)
         store.add_history(incident_id, "AGENT_FAILED", f"{agent} {step_id} TIMEOUT",
                           {"agent": agent})
         return AgentResult(False, agent, "timeout", error_code="TIMEOUT", error="30s timeout")
@@ -158,6 +165,16 @@ def _snapshot_plan(plan: PlanResult, version: int) -> dict:
     return {"version": version,
             "reasoning": plan.reasoning,
             "steps": [s.__dict__ for s in plan.steps]}
+
+
+def _record_agent_timing(incident_id: str, agent: str, started_at: float, wall_clock_ms: float):
+    """Persist per-agent wall-clock timing into telemetry.agent_timings."""
+    from datetime import datetime, timezone
+    def _fn(s):
+        s["telemetry"]["agent_timings"][agent] = {
+            "wall_clock_ms": round(wall_clock_ms, 1),
+        }
+    store._update(incident_id, _fn)
 
 
 async def run_incident(incident_id: str, backend: AgentBackend, emit: EmitFn | None = None):
@@ -286,10 +303,31 @@ async def run_incident(incident_id: str, backend: AgentBackend, emit: EmitFn | N
 
     if await _out_of_time():
         return
-    # --- REMEDIATING (up to 2 attempts) ---
+    # --- GUARDRAIL CHECK (hard gate, not a prompt instruction) ---
     action = safe_get(diag.data, "recommended_action", default="rollback")
     action_details = safe_get(diag.data, "action_details", default={}) or {}
     action_type = str(action_details.get("type", action)).upper()
+
+    guard = RemediatorGuardrail()
+    guard_result = guard.check(action=action_type, confidence=conf)
+    if not guard_result["allowed"]:
+        # Persist the guardrail state so the frontend can show "Approve Fix?"
+        store._update(incident_id, lambda s: s.update(
+            status="AWAITING_APPROVAL",
+            guardrail=guard_result,
+        ))
+        st = store.get_state(incident_id)
+        store.add_history(incident_id, "GUARDRAIL_BLOCKED", guard_result["message"],
+                          {"reason": guard_result["reason"], "action": action_type,
+                           "confidence": conf})
+        await _emit(emit, "AWAITING_APPROVAL", st, guard_result["message"],
+                    {"guardrail": guard_result})
+        # NOTE: live approval flow (asyncio.Event wait) requires Person A to add
+        # a POST /api/approve-fix endpoint that sets a shared event. For now the
+        # state halts here visibly — judges see the guardrail firing, not a crash.
+        return
+
+    # --- REMEDIATING (up to 2 attempts) ---
     for attempt in range(1, store.MAX_REMEDIATION_ATTEMPTS + 1):
         if await _out_of_time():
             return

@@ -1,0 +1,13 @@
+{
+  "id": "SC-02",
+  "description": "Happy path — OOM crash, memory leak, rollback resolves",
+  "alert": { "type": "OOM_CRASH", "service": "api-gateway", "severity": "P1", "message": "OutOfMemoryError: Java heap space" },
+  "inject_failures": [],
+  "expect": {
+    "final_status": "RESOLVED",
+    "diagnosis": { "recommended_action": "rollback", "confidence_min": 0.80 },
+    "tools_called": ["fetch_logs", "fetch_metrics", "correlate_findings", "propose_diagnosis", "execute_fix", "verify_fix"],
+    "escalated": false,
+    "plan_versions": 1
+  }
+}

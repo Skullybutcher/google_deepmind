@@ -1,0 +1,14 @@
+{
+  "id": "SC-07",
+  "description": "Guardrail — disallowed action type must be blocked",
+  "alert": { "type": "HIGH_LATENCY", "service": "api-gateway", "severity": "P1", "message": "P99 latency exceeded 10000ms" },
+  "inject_failures": [],
+  "_sim_override": { "diagnosis_action": "config_change" },
+  "expect": {
+    "final_status": "AWAITING_APPROVAL",
+    "guardrail_triggered": true,
+    "guardrail_reason": "action_not_in_allowlist",
+    "escalated": false,
+    "plan_versions": 1
+  }
+}

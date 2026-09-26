@@ -1,0 +1,14 @@
+{
+  "id": "SC-03",
+  "description": "Failure injection 1 — log source unavailable, degraded mode, continues to resolve",
+  "alert": { "type": "HIGH_LATENCY", "service": "api-gateway", "severity": "P1", "message": "P99 latency exceeded 10000ms" },
+  "inject_failures": ["LOG_SOURCE_UNAVAILABLE"],
+  "expect": {
+    "final_status": "RESOLVED",
+    "diagnosis": { "recommended_action": "rollback", "confidence_max": 0.75, "confidence_min": 0.40 },
+    "tools_called": ["fetch_logs", "fetch_metrics", "correlate_findings", "propose_diagnosis", "execute_fix", "verify_fix"],
+    "events_must_include": ["REPLAN_TRIGGERED", "AGENT_FAILED"],
+    "escalated": false,
+    "plan_versions": 2
+  }
+}

@@ -32,6 +32,7 @@ VALID_STATUSES = {
     "REPLANNING",
     "RESOLVED",
     "ESCALATED",
+    "AWAITING_APPROVAL",  # guardrail fired — waiting for human to click "Approve Fix?"
 }
 
 _lock = threading.Lock()
@@ -58,6 +59,15 @@ def new_incident(alert_type: str, service: str, severity: str) -> dict:
         "findings": {"log_analysis": None, "metrics_analysis": None},
         "diagnosis": None,
         "remediation": {"action": None, "result": None, "attempts": 0},
+        "guardrail": None,          # set when guardrail fires: {allowed, reason, message, ...}
+        "telemetry": {              # per-incident cost + latency panel data
+            "started_at": _now(),
+            "completed_at": None,
+            "total_wall_clock_ms": None,
+            "agent_timings": {},    # agent -> {"started_at", "completed_at", "wall_clock_ms"}
+            "plan_versions": 1,
+            "guardrail_triggered": False,
+        },
         "history": [],
         # NOTE: failure flags set via /api/inject-failure PERSIST across
         # incidents (demo script: inject -> trigger -> watch degraded run).

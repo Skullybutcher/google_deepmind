@@ -1,0 +1,14 @@
+{
+  "id": "SC-05",
+  "description": "Both failures — degraded mode, remediation fails, escalates after max attempts",
+  "alert": { "type": "HIGH_LATENCY", "service": "api-gateway", "severity": "P1", "message": "P99 latency exceeded 10000ms" },
+  "inject_failures": ["LOG_SOURCE_UNAVAILABLE", "REMEDIATION_FAILED"],
+  "expect": {
+    "final_status": "ESCALATED",
+    "diagnosis": { "confidence_max": 0.75 },
+    "tools_called": ["fetch_logs", "fetch_metrics", "correlate_findings", "propose_diagnosis", "execute_fix"],
+    "events_must_include": ["REPLAN_TRIGGERED", "AGENT_FAILED", "ESCALATED"],
+    "escalated": true,
+    "plan_versions": 2
+  }
+}
