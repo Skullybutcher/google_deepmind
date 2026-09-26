@@ -7,6 +7,13 @@
   command = "npm run build"
   publish = "dist"
 
+# PROD FIX: Netlify's /api proxy BUFFERS streaming responses, so SSE
+# (/api/events) delivers zero bytes through it (REST endpoints work fine).
+# Bake the backend origin into the frontend at build time instead — all API
+# calls go directly to Render (CORS is allow_origins=*, verified live).
+[build.environment]
+  VITE_API_BASE = "https://aegis-backend-5l4g.onrender.com"
+
 [[redirects]]
   from = "/api/*"
   to = "https://aegis-backend-5l4g.onrender.com/api/:splat"
