@@ -304,9 +304,17 @@ class _ApprovalNeeded(Exception):
         super().__init__(guard.get("reason") or "approval needed")
 
 
+# Injected failures are DETERMINISTIC by design (RealBackend enforces them
+# regardless of agent behavior) — retrying them is guaranteed-futile waste.
+# Retry logic is for TRANSIENT failures only.
+NON_RETRYABLE = {"SOURCE_TIMEOUT", "ROLLBACK_FAILED"}
+
+WALL_CLOCK_SENTINEL = "__WALL_CLOCK__"
+
+
 async def _execute_plan_graph(incident_id: str, backend: AgentBackend, emit: EmitFn,
-                              plan_steps: list, service: str,
-                              profile: dict) -> tuple[dict, list]:
+                              plan_steps: list, service: str, profile: dict,
+                              out_of_time=None) -> tuple[dict, list]:
     """Dependency-driven executor.
 
     Loop (each iteration = one 'wave'):
@@ -337,6 +345,12 @@ async def _execute_plan_graph(incident_id: str, backend: AgentBackend, emit: Emi
     failed_agents: list[str] = []
 
     while True:
+        # WALL CLOCK between waves (cheap check, no LLM call): the phase-boundary
+        # checks alone let retry loops blow past the cap (real degraded run hit
+        # 318s vs the 240s limit).
+        if out_of_time is not None and await out_of_time():
+            return results, [WALL_CLOCK_SENTINEL]
+
         # wave = every step whose deps are done and hasn't run successfully
         ready = [s for sid, s in steps.items()
                  if step_status[sid] in ("PENDING", "RETRY")
@@ -387,7 +401,11 @@ async def _execute_plan_graph(incident_id: str, backend: AgentBackend, emit: Emi
             else:
                 # LOOP OPTIMIZATION: retry before replan (retry = one cheap
                 # agent call; replan = full Planner round trip + graph rebuild).
-                if step_retries[s.id] < profile.get("max_retries", 1):
+                # EXCEPTION: injected failures are deterministic — never retry
+                # them (a dead log source stays dead; retrying just burns the
+                # wall clock).
+                if (step_retries[s.id] < profile.get("max_retries", 1)
+                        and res.error_code not in NON_RETRYABLE):
                     step_retries[s.id] += 1
                     step_status[s.id] = "RETRY"
                     store.add_history(incident_id, "STEP_RETRY",
@@ -497,7 +515,12 @@ async def run_incident(incident_id: str, backend: AgentBackend, emit: EmitFn | N
     results: dict = {}
     while True:
         results, failed = await _execute_plan_graph(
-            incident_id, backend, emit, plan.steps, service, profile)
+            incident_id, backend, emit, plan.steps, service, profile,
+            out_of_time=lambda: _out_of_time())
+
+        # Wall-clock sentinel: _execute_plan_graph already escalated; just stop.
+        if failed == [WALL_CLOCK_SENTINEL]:
+            return
 
         if not failed:
             break  # graph fully executed
