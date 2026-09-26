@@ -617,7 +617,7 @@ aegis/
 │   │   ├── __init__.py
 │   │   └── simulated.py     # All simulated tool implementations (fetch_logs, etc.)
 │   ├── requirements.txt
-│   └── Procfile             # For Railway/Render deployment
+│   └── Dockerfile           # For Cloud Run deployment
 ├── frontend/
 │   ├── index.html           # Single-page app
 │   ├── style.css            # All styles (glassmorphism, layout, typography)
@@ -643,8 +643,8 @@ CORS_ORIGINS=*
 
 ## 7. Deployment Checklist
 
-- [ ] Backend deployed to Railway/Render with env vars set
-- [ ] Frontend served from backend (FastAPI static files mount) OR deployed to Vercel
+- [ ] Backend deployed to Cloud Run with `--min-instances=1`; `/api/health` returns 200
+- [ ] Frontend deployed to Firebase Hosting; `firebase.json` rewrites `/api/**` to Cloud Run
 - [ ] CORS configured to allow frontend origin
 - [ ] SSE endpoint accessible from public URL
 - [ ] Health check endpoint (`GET /api/health`) returns 200

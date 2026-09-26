@@ -68,21 +68,22 @@ Person B (agent owner) tests each agent in isolation and flags issues by hour 2:
 
 | Attribute | Detail |
 |---|---|
-| **Likelihood** | MEDIUM — free-tier hosting (Railway/Render) can be slow on cold starts |
+| **Likelihood** | LOW — Cloud Run is reliable; `--min-instances=1` eliminates cold-start during judging |
 | **Impact** | CRITICAL — judges can't see the demo = instant fail |
 | **Detection** | During deployment at hour 3:30 |
 
 ### Mitigation
 - **Three layers of redundancy**:
-  1. **Primary**: Deployed on Railway/Render with a keep-alive cron ping every 5 minutes.
-  2. **Backup 1**: Local machine running the app + ngrok/Cloudflare tunnel for public URL.
+  1. **Primary**: Deployed on Cloud Run with `--min-instances=1` during judging slot + Firebase Hosting rewrites `/api/**` to Cloud Run (same-origin, no CORS issues).
+  2. **Backup 1**: Re-run `gcloud run deploy --source .` (usually faster than debugging; keep ngrok as last resort only if Cloud Run itself is down).
   3. **Backup 2**: Pre-recorded 2-minute screen recording uploaded to YouTube (unlisted).
 - Person C records the demo video at hour 4:00 regardless of hosting status.
 - All three backup URLs are included in the writeup and README.
 
 ### Fallback (trigger at 3:30 if deploy fails)
-- Immediately activate ngrok tunnel.
-- If ngrok also fails: the pre-recorded video IS the demo. Writeup says "live demo available at [ngrok URL], recorded demo at [YouTube URL]."
+- Re-run `gcloud run deploy --source .` (often fixes transient Cloud Build issues).
+- If Cloud Run itself is down (rare): fall back to local machine + ngrok tunnel.
+- If ngrok also fails: the pre-recorded video IS the demo. Writeup says "live demo available at [Firebase URL], recorded demo at [YouTube URL]."
 
 ### Decision Owner
 Person A (deploy owner) makes the call at 3:30.
@@ -212,7 +213,7 @@ Person A (orchestrator) implements the limits. Person B validates agents complet
 | 2:00 | Mini-integration passes? | A | Continue / identify gap |
 | 2:00 | All agents produce valid output? | B | Continue / simplify schema / hardcode |
 | 3:00 | Feature freeze | All | Enforced — no exceptions |
-| 3:30 | Deploy works? | A | Railway / ngrok / pre-recorded video |
+| 3:30 | Deploy works? | A | Cloud Run + Firebase / re-deploy / pre-recorded video |
 | 3:30 | Frontend integration works? | C | Live SSE / polling / replay mode |
 | 3:45 | Writeup started? | B | Must start — non-negotiable |
 | 4:00 | Demo recorded? | C | Must record — non-negotiable |
@@ -225,7 +226,7 @@ Person A (orchestrator) implements the limits. Person B validates agents complet
 These decisions CANNOT be deferred. Discuss and lock in the first standup:
 
 1. **Backend language**: Python (FastAPI) — recommended. Override only if team strongly prefers Node.
-2. **Hosting platform**: Railway — recommended. Override only if team has existing Render/Replit setup.
+2. **Hosting platform**: Cloud Run (backend) + Firebase Hosting (frontend) — on-brand for Google hackathon. See `DEPLOYMENT.md` for full setup.
 3. **SSE vs WebSocket**: SSE — recommended. Simpler, sufficient for one-way updates.
 4. **Frontend framework**: None (vanilla HTML/CSS/JS) — recommended. No build tools = no build failures.
 5. **Number of agents**: 5 (Planner + LogAnalyzer + MetricsAgent + Diagnostician + Remediator). Descope to 3 if needed (cut MetricsAgent, merge Diagnostician into Planner).

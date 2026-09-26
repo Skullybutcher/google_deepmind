@@ -404,7 +404,7 @@ Absolute-positioned small cards around the glass panel. Skip if behind schedule.
 
 ### Hour 3:30–4:00 — Integration + Polish
 
-- [ ] Point `API_BASE` to Person A's deployed URL
+- [ ] Verify `API_BASE` is empty string (same-origin via Firebase rewrite)
 - [ ] Test full happy path through live backend
 - [ ] Test both failure scenarios
 - [ ] Fix any text overflow from real agent outputs (add `overflow: hidden; text-overflow: ellipsis`)
@@ -413,7 +413,7 @@ Absolute-positioned small cards around the glass panel. Skip if behind schedule.
 
 ### Hour 4:00–4:30 — Demo Recording
 
-- [ ] Open the deployed app in Chrome
+- [ ] Open the deployed app in Chrome (`your-project.web.app`)
 - [ ] Start screen recording (OBS / browser extension)
 - [ ] Record: happy path (40 seconds)
 - [ ] Record: failure 1 → recovery (30 seconds)
@@ -459,7 +459,7 @@ async function replayMockEvents() {
 |---|---|---|
 | Person A | SSE endpoint at `localhost:8000/api/events` | 1:30 |
 | Person A | Mock SSE events for testing | 1:30 |
-| Person A | Deployed public URL | 3:30 |
+| Person A | Deployed Cloud Run URL (auto-proxied via Firebase rewrite) | 3:30 |
 
 ## What You Deliver To Others
 

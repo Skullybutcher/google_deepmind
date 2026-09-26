@@ -86,13 +86,13 @@
 
 | Person A | Person B | Person C |
 |---|---|---|
-| Deploy backend to Railway/Render | Test full happy path through deployed backend | Test full UI against deployed backend |
+| Deploy backend to Cloud Run (`gcloud run deploy`) | Test full happy path through deployed backend | Test full UI against deployed backend |
 | Configure CORS for frontend domain | Test Failure 1 (log source) end-to-end | Fix any visual bugs from real data (text overflow, long agent outputs) |
-| Verify SSE works through deployed URL | Test Failure 2 (remediation) end-to-end | Deploy frontend (serve from same backend OR Vercel) |
-| **Fallback**: If deploy fails, set up ngrok tunnel | | **Fallback**: If SSE flaky, implement polling fallback (fetch state every 2s) |
+| Verify SSE works through Firebase rewrite | Test Failure 2 (remediation) end-to-end | Deploy frontend via `firebase deploy --only hosting` |
+| **Fallback**: If deploy fails, re-run `gcloud run deploy --source .` | | **Fallback**: If SSE flaky, implement polling fallback (fetch state every 2s) |
 
 > **🚨 GATE at 4:00**: Demo must work end-to-end through a public URL. If not:
-> - **Backup 1**: ngrok tunnel to local
+> - **Backup 1**: Re-run `gcloud run deploy` (faster than ngrok); keep ngrok as last resort
 > - **Backup 2**: Pre-recorded video (record NOW)
 
 ---

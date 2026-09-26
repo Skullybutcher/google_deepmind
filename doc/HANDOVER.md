@@ -23,7 +23,7 @@
 | **0:30** | API spike complete, contracts locked | A + B | 🚨 YES — if API fails, activate fallback |
 | **2:00** | Mini-integration: 1 real agent + SSE test | A + B + C | 🔄 5-min check |
 | **3:00** | Feature freeze — NO new features | ALL | 🚨 YES — enforced |
-| **3:30** | Full integration + deploy | A + C | 🚨 YES — if deploy fails, switch to ngrok |
+| **3:30** | Full integration + deploy | A + C | 🚨 YES — if deploy fails, re-run `gcloud run deploy` |
 | **3:45** | Writeup draft started | B | Non-negotiable |
 | **4:00** | Demo video recording started | C | Non-negotiable |
 | **4:50** | All deliverables submitted | ALL | Final |
@@ -63,10 +63,10 @@
 ## Integration Sequence (Hour 3:30)
 
 ```
-Step 1: Person A deploys backend to Railway/Render
-Step 2: Person A shares public URL with Person C
-Step 3: Person C points frontend's SSE EventSource to public URL
-Step 4: Person C deploys frontend (or A serves it as static files from backend)
+Step 1: Person A deploys backend to Cloud Run
+Step 2: Person A shares Firebase Hosting URL with Person C
+Step 3: Person C builds React app (`npm run build`) and deploys via `firebase deploy`
+Step 4: Firebase Hosting rewrites `/api/**` to Cloud Run (same origin — no CORS issues)
 Step 5: Everyone tests:
          - Happy path (Trigger Incident → all agents → RESOLVED)
          - Failure 1 (Inject Log Failure → replan → degraded resolution)
@@ -81,8 +81,8 @@ Step 7: Person B finishes writeup with demo link + repo link
 
 | Problem | Fallback | Owner |
 |---|---|---|
-| Backend won't deploy | Run locally + ngrok tunnel | A |
-| SSE not working through proxy | Switch frontend to polling (`GET /api/state` every 2s) | C |
+| Backend won't deploy | Re-run `gcloud run deploy --source .` (usually faster than debugging) | A |
+| SSE not working through proxy | Verify Firebase rewrite; fallback to polling (`GET /api/state` every 2s) | C |
 | Agents returning garbage | Hardcode agent responses for demo | B |
 | Frontend can't connect to backend | Replay mode (canned SSE events from JSON file) | C |
 | Time running out (past 4:00) | Use whatever works, record video of current state | C |

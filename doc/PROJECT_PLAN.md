@@ -5,7 +5,7 @@
 > **Stack**: Antigravity Agent (`antigravity-preview-09-2026`) via the Interactions API  
 > **Team Size**: 3 people × 5 hours  
 > **Repo**: Public GitHub  
-> **Demo**: Hosted web app (Vercel / Cloudflare Pages + serverless backend)
+> **Demo**: Hosted web app (Firebase Hosting + Cloud Run backend). See `DEPLOYMENT.md`.
 
 ---
 
@@ -189,7 +189,7 @@ Orchestrator receives remediation result:
 | **State** | JSON file + in-memory dict | Simplest possible; no DB setup time |
 | **Frontend** | Single HTML page + vanilla JS + CSS | Fastest to build; no build tools needed |
 | **Live updates** | Server-Sent Events (SSE) | Simpler than WebSockets; native browser support |
-| **Hosting** | Backend: Railway / Render | Free tier, fast deploy |
+| **Hosting** | Backend: Cloud Run; Frontend: Firebase Hosting | Same-origin via rewrite, no CORS. On-brand for Google hackathon. See `DEPLOYMENT.md` |
 | **Demo recording** | Screen capture (OBS / browser ext) | Backup if live demo flakes |
 
 > **Assumption**: The Interactions API provides a way to create an agent session, send messages, and receive responses (synchronous or streaming). We assume Python SDK availability. If only REST, we use `httpx` directly. **This must be validated in the first 15 minutes.**
@@ -273,7 +273,7 @@ Orchestrator receives remediation result:
 | State management | 1:30–2:00 | Incident State Object, JSON persistence, transitions, history logging. |
 | Wire real agent calls | 2:00–3:00 | Replace stubs with Interactions API calls. Parallel execution for Log+Metrics. |
 | Failure detection + recovery | 3:00–3:30 | Timeout detection, error handling, replan trigger, failure flags. |
-| Integration + deploy | 3:30–4:00 | Wire frontend SSE, deploy to Railway/Render. |
+| Integration + deploy | 3:30–4:00 | Deploy to Cloud Run + Firebase Hosting. See `DEPLOYMENT.md`. |
 | Testing + buffer | 4:00–4:30 | E2E testing: happy path + both failure scenarios. |
 
 ### Person B — "Agent Swarm" (All LLM Agents + Tools + Prompts)
@@ -323,7 +323,7 @@ Orchestrator receives remediation result:
 |---|---|---|
 | Backend language | Python (FastAPI) vs Node.js | Python — better async |
 | Interactions API auth | API key vs OAuth | Determine from docs |
-| Hosting platform | Railway vs Render vs Replit | Railway — fastest free deploy |
+| Hosting platform | Railway vs Cloud Run | Cloud Run + Firebase Hosting — on-brand for Google hackathon, same-origin rewrite eliminates CORS |
 | SSE event format | Lock JSON schema | See below |
 | Agent I/O contracts | Lock input/output JSON | See Architecture section |
 

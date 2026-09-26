@@ -23,7 +23,7 @@
 | `backend/state.py` | IncidentState model, JSON persistence, history logging | P0 |
 | `backend/agents/base.py` | Base agent wrapper: Interactions API call function | P0 |
 | `backend/requirements.txt` | Dependencies: `fastapi`, `uvicorn`, `httpx`, `sse-starlette` | P0 |
-| `backend/Procfile` | `web: uvicorn main:app --host 0.0.0.0 --port $PORT` | P1 |
+| `backend/Dockerfile` | Cloud Run container: `FROM python:3.11-slim`, `CMD uvicorn` | P1 |
 | `README.md` | Project description, setup instructions, demo link | P1 |
 | `.gitignore` | `.env`, `__pycache__`, `state_*.json`, `node_modules` | P2 |
 
@@ -199,14 +199,16 @@ async def handle_agent_failure(state, failed_agent, error):
         state.add_event("ESCALATED", reason="Max replan attempts exceeded")
 ```
 
-### Hour 3:30–4:00 — Integration + Deploy
+### Hour 3:30–4:00 — Integration + Deploy (Cloud Run + Firebase)
 
-- [ ] Accept Person C's frontend files, serve as static files from FastAPI
-- [ ] Deploy to Railway: `railway up` (or Render)
-- [ ] Set env vars: `ANTIGRAVITY_API_KEY`, `PORT`
-- [ ] Verify SSE works through public URL
-- [ ] Share public URL with Person C for final testing
-- [ ] **Fallback**: If deploy fails, run locally + `ngrok http 8000`
+- [ ] Create `Dockerfile` in `aegis/backend/` (see `DEPLOYMENT.md`)
+- [ ] Deploy backend: `gcloud run deploy aegis-backend --source . --region us-central1 --allow-unauthenticated --set-secrets ANTIGRAVITY_API_KEY=ANTIGRAVITY_API_KEY:latest --min-instances=1 --timeout=300`
+- [ ] Set env vars: `ANTIGRAVITY_API_BASE_URL`, `CORS_ORIGINS=*`
+- [ ] Verify `/api/health` returns 200 on the Cloud Run URL
+- [ ] Person C builds React: `npm run build` → `firebase deploy --only hosting`
+- [ ] Verify Firebase rewrite (`/api/**` → Cloud Run) works with SSE
+- [ ] Share Firebase Hosting URL (`your-project.web.app`) with team
+- [ ] **Fallback**: If Cloud Run deploy fails, re-run `gcloud run deploy --source .` (usually faster than debugging). Keep ngrok as last resort.
 
 ### Hour 4:00–4:30 — Testing + README
 
@@ -225,7 +227,7 @@ async def handle_agent_failure(state, failed_agent, error):
 | Person B | API spike findings (auth method, SDK calls) | 0:30 |
 | Person B | Agent files (`planner.py`, `log_analyzer.py`, etc.) | 2:00–3:00 (rolling) |
 | Person B | `tools/simulated.py` with mock data + failure hooks | 2:30 |
-| Person C | Frontend files (`index.html`, `style.css`, `app.js`) | 3:30 |
+| Person C | Frontend files for React build + Firebase deploy | 3:30 |
 
 ## What You Deliver To Others
 
@@ -234,5 +236,5 @@ async def handle_agent_failure(state, failed_agent, error):
 | Person B | Working `base.py` agent wrapper | 1:00 |
 | Person B | Orchestrator with stubs (for agent testing) | 1:30 |
 | Person C | SSE endpoint emitting mock events | 1:30 |
-| Person C | Deployed public URL | 3:30 |
+| Person C | Deployed Cloud Run URL + Firebase Hosting URL | 3:30 |
 | ALL | README.md with demo link | 4:30 |
