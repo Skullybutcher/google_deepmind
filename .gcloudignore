@@ -1,0 +1,15 @@
+# Build context for Cloud Build = repo root; only what the backend image
+# needs goes up. Keeps the build fast and keeps local-only files out.
+frontend
+doc
+for-submission
+.git
+.gitignore
+AGENTS_SYNC.md
+Dockerfile.gcloud-*
+state_*.json
+*.md
+!README.md
+**/__pycache__
+**/*.pyc
+.env
