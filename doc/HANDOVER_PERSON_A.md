@@ -201,7 +201,7 @@ async def handle_agent_failure(state, failed_agent, error):
 
 ### Hour 3:30–4:00 — Integration + Deploy (Cloud Run + Firebase)
 
-- [ ] Create `Dockerfile` in `aegis/backend/` (see `DEPLOYMENT.md`)
+- [ ] Create `Dockerfile` in `backend/` (see `DEPLOYMENT.md`)
 - [ ] Deploy backend: `gcloud run deploy aegis-backend --source . --region us-central1 --allow-unauthenticated --set-secrets ANTIGRAVITY_API_KEY=ANTIGRAVITY_API_KEY:latest --min-instances=1 --timeout=300`
 - [ ] Set env vars: `ANTIGRAVITY_API_BASE_URL`, `CORS_ORIGINS=*`
 - [ ] Verify `/api/health` returns 200 on the Cloud Run URL

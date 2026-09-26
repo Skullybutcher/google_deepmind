@@ -12,7 +12,7 @@
 - **Track**: Autonomous Orchestration with Managed Agents (Hackathon)
 - **Stack**: Antigravity Agent (`antigravity-preview-09-2026`) via Interactions API
 - **Deadline**: 5 hours from kickoff. Every minute counts.
-- **Repo structure**: `aegis/backend/`, `aegis/frontend/`, `docs/`
+- **Repo structure**: `backend/`, `frontend/`, `doc/`
 
 ---
 

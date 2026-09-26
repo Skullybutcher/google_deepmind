@@ -75,7 +75,7 @@ echo -n "YOUR_ANTIGRAVITY_API_KEY" | gcloud secrets create ANTIGRAVITY_API_KEY -
 Cloud Run needs a container image. Minimal Dockerfile for the FastAPI backend:
 
 ```dockerfile
-# aegis/backend/Dockerfile
+# backend/Dockerfile
 FROM python:3.11-slim
 
 WORKDIR /app
@@ -97,7 +97,7 @@ CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8080"]
 ## 5. Backend Deployment Commands
 
 ```bash
-cd aegis/backend
+cd backend
 
 # Build & push image, then deploy in one step
 gcloud run deploy aegis-backend \
@@ -121,7 +121,7 @@ Notes:
 ## 6. Frontend (React) Deployment
 
 ```bash
-cd aegis/frontend
+cd frontend
 npm run build
 ```
 
@@ -192,7 +192,7 @@ Delete the job after judging (`gcloud scheduler jobs delete aegis-keepalive`) so
 - [ ] `gcloud` + `firebase` CLIs authenticated to the hackathon's GCP project
 - [ ] Required APIs enabled (Cloud Run, Cloud Build, Artifact Registry, Secret Manager, Cloud Scheduler)
 - [ ] `ANTIGRAVITY_API_KEY` stored in Secret Manager, not committed to git
-- [ ] `Dockerfile` present in `aegis/backend/`, reads `PORT` from env
+- [ ] `Dockerfile` present in `backend/`, reads `PORT` from env
 - [ ] Backend deployed to Cloud Run, `/api/health` returns 200
 - [ ] React app built (`npm run build`) and deployed to Firebase Hosting
 - [ ] `firebase.json` rewrites confirmed working (`/api/**` → Cloud Run; SSE stream visibly updating in browser dev tools)
