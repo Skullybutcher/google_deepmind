@@ -82,6 +82,20 @@ def health():
     return {"status": "ok", "service": "aegis-orchestrator"}
 
 
+@app.get("/api/debug/env")
+def debug_env():
+    """Deployment diagnostics. NEVER returns the key value — only presence
+    and length — so it's safe to expose while debugging Render env vars."""
+    k = os.environ.get("GEMINI_API_KEY", "")
+    return {
+        "USE_REAL": os.environ.get("USE_REAL", "<unset>"),
+        "GEMINI_API_KEY_present": bool(k),
+        "GEMINI_API_KEY_length": len(k),
+        "GEMINI_API_KEY_prefix_ok": k.startswith("AIza"),
+        "python": os.sys.version.split()[0],
+    }
+
+
 @app.post("/api/trigger-incident")
 async def trigger(req: TriggerReq):
     st = store.new_incident(req.alert_type, req.service, req.severity)
