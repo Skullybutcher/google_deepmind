@@ -198,10 +198,30 @@ Orchestrator receives remediation result:
 
 ## 3. Failure-Injection Design
 
+> [!IMPORTANT]
+> **Sandbox Scope**: All incident response runs in a **strictly controlled local sandbox**. No live infrastructure is queried. Every tool (`fetch_logs`, `fetch_metrics`, `execute_fix`, `verify_fix`) returns **hardcoded simulated data** from the `tools/simulated.py` module. This means:
+> - The demo never flakes due to external API outages.
+> - Every failure is an **engineered test of recovery logic**, not a bug.
+> - Judges can trigger failures deterministically via dashboard buttons.
+>
+> The specific mock errors are:
+> - `PermissionError: Missing IAM Role for CloudWatch` → mapped to "Log Source Unavailable"
+> - `DeploymentLockError: Rollback blocked by CI/CD pipeline pid-4521` → mapped to "Remediation Failed"
+>
+> These are realistic production errors that an SRE would encounter. The point is not that we can call a real API — it's that the **multi-agent system recovers intelligently when the API fails**.
+
 ### Failure 1: "Log Source Unavailable" (Investigation-Phase Failure)
 
 - **What happens**: The `fetch_logs` tool in LogAnalyzer returns an error (simulated timeout / 503).
-- **How injected**: Boolean flag `INJECT_LOG_FAILURE` set via dashboard button. The simulated `fetch_logs` tool checks this flag and returns an error response.
+- **Mock error payload**:
+  ```json
+  {
+    "status": "error",
+    "error_code": "SOURCE_TIMEOUT",
+    "message": "PermissionError: Missing IAM Role for CloudWatch — Failed to connect to log aggregation service after 30s"
+  }
+  ```
+- **How injected**: Boolean flag `INJECT_LOG_FAILURE` set via dashboard button. The simulated `fetch_logs` tool checks this flag and returns the error payload above instead of log data.
 - **Orchestrator detection**: LogAnalyzer session returns an error output or times out (30s timeout).
 - **Recovery behavior**:
   1. Orchestrator marks step S1 (LogAnalyzer) as `FAILED` in state.
@@ -213,7 +233,15 @@ Orchestrator receives remediation result:
 
 ### Failure 2: "Remediation Failed" (Action-Phase Failure)
 
-- **What happens**: The `execute_fix` tool in Remediator returns "ROLLBACK_FAILED — deployment lock held by another process."
+- **What happens**: The `execute_fix` tool in Remediator returns a deployment lock error.
+- **Mock error payload**:
+  ```json
+  {
+    "status": "error",
+    "error_code": "ROLLBACK_FAILED",
+    "message": "DeploymentLockError: Cannot rollback — deployment lock held by CI/CD pipeline process pid-4521. Manual intervention required."
+  }
+  ```
 - **How injected**: Boolean flag `INJECT_REMEDIATION_FAILURE` set via a second dashboard button.
 - **Orchestrator detection**: Remediator session returns a failure result.
 - **Recovery behavior**:
@@ -230,6 +258,7 @@ Orchestrator receives remediation result:
 - **Failure 2** = recovery during *action* (end-of-pipeline).
 - Together they show recovery at any stage, not just one hardcoded point.
 - Both are **on-demand** via buttons for reliable judge demos.
+- Both use **realistic production error messages** judges will recognize from real SRE work.
 
 ---
 

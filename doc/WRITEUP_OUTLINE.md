@@ -18,6 +18,7 @@
 - Single-prompt LLM wrappers fail here: they can't track state across investigation phases, can't recover when a data source is unreachable, and can't re-plan when a fix fails.
 - AEGIS demonstrates that a **stateful multi-agent system** with explicit planning, delegation, state tracking, and failure recovery can automate incident response end-to-end.
 - Brief thesis: "We built a 5-agent system orchestrated by a deterministic state machine that plans investigations, delegates to specialist agents, tracks state across the full incident lifecycle, and dynamically re-plans when failures occur."
+- **Credibility anchor**: Draw explicit parallel to the decentralized supervisor pattern used in TruthGuard AI (where a supervisor agent intercepts uncertain claims before they corrupt the knowledge graph) and the asynchronous multi-agent orchestration experience from Agentathon 2025. Frame AEGIS as the natural evolution of those patterns — same core insight (agents need a supervisor that tracks state and routes failures), applied to the incident response domain with Antigravity's native Interactions API for session management.
 
 ---
 
@@ -50,6 +51,12 @@
   - Sessions are created per-incident, per-agent
   - Tool definitions are registered with each agent at creation time
   - The orchestrator sends context-rich messages and receives structured responses
+  - `previous_interaction_id` chains agent context natively — no fragile prompt concatenation
+
+- **Prior Art & Design Lineage** (proof of engineering depth):
+  - **TruthGuard AI parallel**: AEGIS's Orchestrator→Diagnostician→Remediator pipeline mirrors the TruthGuard supervisor model where a Verifier agent intercepts uncertain entity extractions before they reach the knowledge graph. In AEGIS, the Diagnostician plays the same gatekeeper role — it must validate the root-cause hypothesis before the Remediator is allowed to act.
+  - **Agentathon 2025 parallel**: The asynchronous agent swarm pattern (multiple specialist agents running concurrently with a coordinator collecting results) was validated during Agentathon 2025. AEGIS applies the same pattern with `asyncio.gather` for parallel investigation, but adds failure-aware replanning that Agentathon projects typically lacked.
+  - **Why this matters for judges**: These are not theoretical references — they demonstrate a track record of designing, debugging, and shipping multi-agent architectures. The design choices in AEGIS (deterministic orchestrator, bounded retries, native API state management) are direct lessons learned from those prior systems.
 
 ---
 

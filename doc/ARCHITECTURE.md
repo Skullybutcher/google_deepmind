@@ -463,58 +463,137 @@ Use correlate_findings and then propose_diagnosis.
 
 ---
 
-## 4. State Machine Transitions
+## 4. State Machine Transitions (Mermaid Diagram)
+
+The following diagram encodes the **exact conditional routing logic** the Orchestrator executes. Judges can trace every branch — this is deterministic code, not LLM improvisation.
+
+```mermaid
+stateDiagram-v2
+    [*] --> IDLE
+
+    IDLE --> PLANNING : POST /api/trigger-incident
+
+    PLANNING --> INVESTIGATING : plan_created (Planner returns steps)
+    PLANNING --> ESCALATED : planner_error (max 2 retries exceeded)
+
+    state INVESTIGATING {
+        [*] --> LogAnalyzer
+        [*] --> MetricsAgent
+        LogAnalyzer --> join_gate : status == COMPLETED
+        LogAnalyzer --> FAILED_INVESTIGATION : status == FAILED (SOURCE_TIMEOUT / 503)
+        MetricsAgent --> join_gate : status == COMPLETED
+        MetricsAgent --> FAILED_INVESTIGATION : status == FAILED
+        FAILED_INVESTIGATION --> REPLANNING_INV : retry_count < MAX_RETRIES (3)
+        FAILED_INVESTIGATION --> ESCALATED_INNER : retry_count >= MAX_RETRIES
+        join_gate --> [*] : both agents done
+    }
+
+    INVESTIGATING --> DIAGNOSING : all investigators completed (full or partial data)
+    INVESTIGATING --> REPLANNING : any investigator FAILED && retry_count < 3
+
+    REPLANNING --> INVESTIGATING : Planner produces Plan v(N+1) with degraded steps
+    REPLANNING --> ESCALATED : Planner cannot produce viable plan
+
+    DIAGNOSING --> REMEDIATING : diagnosis.confidence >= 0.5
+    DIAGNOSING --> ESCALATED : diagnosis.confidence < 0.5 (insufficient data)
+
+    REMEDIATING --> RESOLVED : execute_fix == SUCCESS && verify_fix == PASS
+    REMEDIATING --> REPLANNING_REMED : execute_fix == FAILED (ROLLBACK_FAILED / LOCK_HELD)
+
+    REPLANNING_REMED --> REMEDIATING : Planner proposes alternative fix (Plan v(N+1))
+    REPLANNING_REMED --> ESCALATED : remediation_retry_count >= 2
+
+    RESOLVED --> [*]
+    ESCALATED --> [*]
+```
+
+### Conditional Logic Reference (maps to `orchestrator.py`)
+
+| Condition | Check | Route To |
+|---|---|---|
+| `step.status == "FAILED"` | Agent session returned error or timed out (30s) | `REPLANNING` if `retry_count < MAX_RETRIES` else `ESCALATED` |
+| `step.status == "COMPLETED"` for all parallel agents | `asyncio.gather` results checked individually | `DIAGNOSING` |
+| `diagnosis.confidence < 0.5` | Diagnostician output field | `ESCALATED` (insufficient data) |
+| `execute_fix.status == "error"` | Remediator tool response | `REPLANNING_REMED` if `remed_retries < 2` else `ESCALATED` |
+| `verify_fix.result == "PASS"` | Remediator verification tool | `RESOLVED` |
+| `plan_version > 3` | State object counter | `ESCALATED` (hard ceiling to prevent infinite loops) |
+
+---
+
+## 4.1. Interactions API Session & State Management
+
+> **This section proves AEGIS manages state natively through the Interactions API, not by appending raw strings to a massive prompt history.**
+
+### How `previous_interaction_id` Chains Agent Context
+
+Each agent interaction via the Interactions API creates an **interaction record** with a unique ID. When the Orchestrator needs to continue a conversation with an agent (e.g., asking the Planner to re-plan after a failure), it passes the `previous_interaction_id` to chain context natively:
+
+```python
+# First interaction: Planner creates initial plan
+response_v1 = await interactions_api.create_interaction(
+    agent_id="planner-agent",
+    model="antigravity-preview-09-2026",
+    messages=[{
+        "role": "user",
+        "content": f"ALERT: {alert.to_json()}\nCreate an investigation plan."
+    }],
+    tools=[create_plan_tool_def],
+    # No previous_interaction_id — this is a fresh session
+)
+
+# Store the interaction ID in our state
+state.planner_interaction_id = response_v1.interaction_id
+
+# ... later, LogAnalyzer fails ...
+
+# Second interaction: Planner re-plans WITH full prior context
+response_v2 = await interactions_api.create_interaction(
+    agent_id="planner-agent",
+    model="antigravity-preview-09-2026",
+    messages=[{
+        "role": "user",
+        "content": f"FAILURE: LogAnalyzer failed (SOURCE_TIMEOUT). "
+                   f"Completed steps: {state.completed_steps_summary()}. "
+                   f"Replan using available data only."
+    }],
+    tools=[create_plan_tool_def],
+    previous_interaction_id=state.planner_interaction_id,  # ← NATIVE STATE CHAIN
+)
+
+# The Planner now has full context of its prior plan + the failure
+# WITHOUT us re-sending the entire conversation history as a giant string
+state.planner_interaction_id = response_v2.interaction_id
+```
+
+### Why This Matters for Judges
+
+| Approach | What We Do | What "Glued Prompts" Do |
+|---|---|---|
+| **State continuity** | `previous_interaction_id` lets the API manage conversational context natively | Concatenate all prior messages into one giant prompt (fragile, token-expensive) |
+| **Agent identity** | Each agent has a persistent `agent_id` registered once | Re-send system prompt + tool definitions on every call |
+| **Failure context** | Re-plan message is compact; prior context is in the API's session | Stuff the entire failure log + prior plan + prior outputs into one prompt |
+| **Token efficiency** | Only the new message is sent; history is managed server-side | Token count grows linearly with every interaction (context window exhaustion risk) |
+
+### Interaction ID Chain Across a Full Incident
 
 ```
-                    ┌──────────┐
-                    │  IDLE    │
-                    └────┬─────┘
-                         │ trigger-incident
-                         ▼
-                    ┌──────────┐
-              ┌─────│ PLANNING │
-              │     └────┬─────┘
-              │          │ plan_created
-              │          ▼
-              │    ┌──────────────┐
-              │    │INVESTIGATING │◄──────────────────┐
-              │    └──┬───────┬───┘                   │
-              │       │       │                       │
-              │       │       │ (parallel)            │
-              │       ▼       ▼                       │
-              │   ┌──────┐ ┌──────┐                   │
-              │   │ Logs │ │Metrics│                   │
-              │   └──┬───┘ └──┬───┘                   │
-              │      │        │                       │
-              │      │ (one fails?)                   │
-              │      ├────────┤                       │
-              │      │ YES    │ NO                    │
-              │      ▼        ▼                       │
-              │  ┌────────┐  all done                 │
-              │  │REPLAN  │──────┐                    │
-              │  └────────┘      │                    │
-              │                  ▼                    │
-              │           ┌───────────┐               │
-              │           │DIAGNOSING │               │
-              │           └─────┬─────┘               │
-              │                 │                     │
-              │                 ▼                     │
-              │          ┌────────────┐               │
-              │          │REMEDIATING │               │
-              │          └──┬──────┬──┘               │
-              │             │      │                  │
-              │          success  failure              │
-              │             │      │                  │
-              │             ▼      ▼                  │
-              │       ┌────────┐ ┌────────┐           │
-              │       │RESOLVED│ │REPLAN  │───(retry?)┘
-              │       └────────┘ └────┬───┘
-              │                       │ (max retries exceeded)
-              │                       ▼
-              │                 ┌──────────┐
-              └────────────────►│ESCALATED │
-                                └──────────┘
+Planner:      [interaction_001] → plan_v1
+                                      ↓
+LogAnalyzer:  [interaction_002] → FAILED (SOURCE_TIMEOUT)
+MetricsAgent: [interaction_003] → completed (anomalies found)
+                                      ↓
+Planner:      [interaction_004, prev=001] → plan_v2 (degraded mode)
+                                      ↓
+Diagnostician:[interaction_005] → diagnosis (metrics-only, confidence 0.7)
+                                      ↓
+Remediator:   [interaction_006] → FAILED (ROLLBACK_FAILED)
+                                      ↓
+Planner:      [interaction_007, prev=004] → plan_v3 (try restart instead)
+                                      ↓
+Remediator:   [interaction_008, prev=006] → SUCCESS (service restarted)
 ```
+
+Each `prev=NNN` link gives the agent full conversational context without prompt bloat. The state object stores these IDs for audit and debugging.
 
 ---
 

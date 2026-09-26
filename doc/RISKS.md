@@ -147,6 +147,62 @@ All three people enforce collectively. Person B is the "time cop" — calls out 
 
 ---
 
+## Risk 6: Infinite Retry Loops / Context Window Exhaustion
+
+| Attribute | Detail |
+|---|---|
+| **Likelihood** | MEDIUM — multi-agent systems can easily get stuck in argue-retry loops |
+| **Impact** | HIGH — demo hangs, token budget burns, or agents produce degrading output as context fills |
+| **Detection** | During integration testing (hours 3–4); hard to catch in unit tests |
+
+### Token & Loop Budget (Hardcoded in `orchestrator.py`)
+
+```python
+# orchestrator.py — HARD LIMITS (non-negotiable)
+MAX_PLAN_VERSIONS = 3          # Planner can replan at most 3 times per incident
+MAX_AGENT_RETRIES = 2          # Each agent gets at most 2 retry attempts on failure
+MAX_REMEDIATION_ATTEMPTS = 2   # Remediator gets at most 2 fix attempts
+AGENT_TIMEOUT_SECONDS = 30     # Any agent call that exceeds 30s is killed
+MAX_INCIDENT_DURATION = 120    # Entire incident auto-escalates after 2 minutes
+SAFE_PARSE_RETRIES = 1         # Re-prompt agent once for malformed output, then use fallback
+```
+
+### Graceful Degradation Protocol
+
+When any limit is hit, the Orchestrator does NOT crash or silently retry. It follows this protocol:
+
+1. **Log the limit hit** in the state history:
+   ```json
+   {"event": "LIMIT_REACHED", "limit": "MAX_PLAN_VERSIONS", "value": 3, "action": "ESCALATING"}
+   ```
+2. **Set incident status to `ESCALATED`** with a human-readable reason:
+   ```json
+   {"status": "ESCALATED", "reason": "Exhausted 3 replan attempts. Root cause unclear with available data. Handing diagnostic report to human operator."}
+   ```
+3. **Emit the full diagnostic report** as the final SSE event, including:
+   - All plans attempted (v1, v2, v3) and why each was insufficient
+   - All agent outputs collected (even partial)
+   - All errors encountered with timestamps
+   - A machine-generated "best guess" summary from the last Diagnostician call
+
+4. **Dashboard renders the ESCALATED state** with a distinct visual treatment (amber warning banner) so judges see this is intentional bounded autonomy, not a crash.
+
+### Why This Matters
+
+| Without Limits | With AEGIS Limits |
+|---|---|
+| Agent A fails → replan → Agent B fails → replan → Agent A fails → replan → ∞ | Max 3 replans → graceful escalation with full diagnostic context |
+| Each replan re-sends entire history → context window fills → output quality degrades | `previous_interaction_id` manages context server-side; each message is compact |
+| Demo hangs for 5+ minutes while agents argue | Hard 2-minute ceiling; demo always completes in a bounded time |
+| Token costs spiral unpredictably | Predictable worst-case: 5 agents × 2 retries × ~1K tokens = ~10K tokens per incident |
+
+### Fallback
+- If during testing agents still loop despite limits: reduce `MAX_PLAN_VERSIONS` to 2 and `MAX_AGENT_RETRIES` to 1. The demo gets simpler but always terminates.
+- If `AGENT_TIMEOUT_SECONDS = 30` causes false positives (agent is slow but working): increase to 45s, but never above 60s.
+
+### Decision Owner
+Person A (orchestrator) implements the limits. Person B validates agents complete within timeout during testing at hour 3:00.
+
 ## Quick Reference: Decision Points
 
 | Time | Decision | Owner | Options |
