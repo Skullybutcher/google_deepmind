@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useRef } from 'react';
 
 const MOCK_MODE = false;
-const API_BASE = ''; 
+const API_BASE = import.meta.env.VITE_API_BASE || '';
 
 const INITIAL_AGENTS = [
     { id: 'Planner', name: 'Planner', role: 'Decomposes alert into subtasks', icon: 'psychology' },
