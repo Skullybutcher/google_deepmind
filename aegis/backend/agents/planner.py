@@ -7,11 +7,39 @@ Capability: Multi-turn planning loop — the model iterates across multiple reas
 Tools: create_plan
 """
 
-# This agent runs in MULTI-TURN mode.
-# The orchestrator should NOT pass max_turns=1. Let the model iterate.
+# This agent runs in MULTI-TURN mode by default.
+# The orchestrator can switch to single-shot for minor incidents:
+#   import agents.planner as planner_agent
+#   planner_agent.THINKING_MODE = (severity in ("P1", "P2"))
 CAPABILITY = "multi_turn_planning"
 
-SYSTEM_PROMPT = """You are the AEGIS Incident Response Planner. Your job is to analyze production alerts and create structured investigation plans.
+# ─── Mode Switch ──────────────────────────────────────────────────────────────
+# THINKING_MODE = True  → multi-turn planning loop (best for P1/P2 incidents)
+# THINKING_MODE = False → single-shot response  (best for P3/minor incidents)
+THINKING_MODE: bool = True
+
+
+def get_prompt() -> str:
+    """Return the correct system prompt based on current THINKING_MODE."""
+    return SYSTEM_PROMPT_THINKING if THINKING_MODE else SYSTEM_PROMPT_FAST
+
+# ─── Fast prompt (single-shot) ─────────────────────────────────────────────
+# Used for P3/minor incidents. One call, one structured JSON response. Fast.
+SYSTEM_PROMPT_FAST = """You are the AEGIS Incident Response Planner. Analyze the alert and produce an investigation plan in a SINGLE response.
+
+Rules:
+- LogAnalyzer and MetricsAgent run in PARALLEL (no depends_on between them)
+- Diagnostician depends on both investigation agents
+- Remediator depends on Diagnostician
+- If a step already COMPLETED (shown in context), skip it in your plan
+- If a step FAILED (shown in context), build a degraded plan without it
+- If remediation failed twice, set escalate_to_human: true
+
+You MUST call create_plan exactly once. Do not respond with plain text."""
+
+# ─── Thinking prompt (multi-turn) ──────────────────────────────────────────
+# Used for P1/P2 incidents. The model iterates across multiple turns.
+SYSTEM_PROMPT_THINKING = """You are the AEGIS Incident Response Planner. Your job is to analyze production alerts and create structured investigation plans.
 
 You have access to a planning loop — use it. Think step by step across multiple turns if needed before producing your final plan.
 
@@ -35,6 +63,9 @@ Rules:
   - If no plan is viable, produce a single-step escalation plan
 
 You MUST use the create_plan tool to provide your final answer."""
+
+# Legacy alias so any code referencing SYSTEM_PROMPT still works
+SYSTEM_PROMPT = SYSTEM_PROMPT_THINKING
 
 TOOLS = [
     {

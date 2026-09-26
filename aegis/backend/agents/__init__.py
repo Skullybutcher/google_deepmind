@@ -1,4 +1,6 @@
 """AEGIS agent exports (Person B)."""
+from . import diagnostician as _diag_module
+from . import planner as _planner_module
 from .diagnostician import AGENT_NAME as DIAGNOSTICIAN_NAME
 from .diagnostician import DEFAULT_FALLBACK as DIAGNOSTICIAN_FALLBACK
 from .diagnostician import OUTPUT_SCHEMA as DIAGNOSTICIAN_SCHEMA
@@ -25,10 +27,80 @@ from .remediator import OUTPUT_SCHEMA as REMEDIATOR_SCHEMA
 from .remediator import SYSTEM_PROMPT as REMEDIATOR_PROMPT
 from .remediator import TOOLS as REMEDIATOR_TOOLS
 
+
+# ─── Thinking-mode switch ─────────────────────────────────────────────────────
+# Severity map used by the orchestrator to auto-switch modes:
+#   P1/P2 (critical/high) → THINKING_MODE = True  (multi-turn loop + web search)
+#   P3/P4 (minor/info)    → THINKING_MODE = False (single-shot, faster)
+#
+# Usage in orchestrator.py:
+#   from agents import set_thinking_mode
+#   set_thinking_mode(severity=state.alert.get("severity", "P1"))
+#
+# Or override manually for testing:
+#   set_thinking_mode(force=False)  # always fast
+#   set_thinking_mode(force=True)   # always thinking
+
+_THINKING_SEVERITIES = {"P1", "P2"}
+
+
+def set_thinking_mode(severity: str | None = None, force: bool | None = None) -> dict[str, bool]:
+    """
+    Set THINKING_MODE on Planner and Diagnostician based on incident severity.
+
+    Args:
+        severity: Alert severity string ("P1", "P2", "P3", "P4").
+                  P1/P2 → thinking=True, P3/P4 → thinking=False.
+        force:    If provided, overrides severity and sets both agents explicitly.
+
+    Returns:
+        Dict of {"Planner": bool, "Diagnostician": bool} showing the mode set.
+    """
+    if force is not None:
+        thinking = force
+    elif severity is not None:
+        thinking = severity.upper() in _THINKING_SEVERITIES
+    else:
+        thinking = True  # default to thinking mode if no info
+
+    _planner_module.THINKING_MODE = thinking
+    _diag_module.THINKING_MODE = thinking
+
+    return {"Planner": thinking, "Diagnostician": thinking}
+
+
+def get_prompt(agent_name: str) -> str:
+    """
+    Get the active system prompt for a given agent, respecting THINKING_MODE.
+
+    Args:
+        agent_name: "Planner" or "Diagnostician" (others always return SYSTEM_PROMPT)
+
+    Returns:
+        The correct system prompt string for the current mode.
+    """
+    if agent_name == "Planner":
+        return _planner_module.get_prompt()
+    if agent_name == "Diagnostician":
+        return _diag_module.get_prompt()
+    # Code-execution agents (LogAnalyzer, MetricsAgent, Remediator) don't have thinking modes
+    from .log_analyzer import SYSTEM_PROMPT as LA_PROMPT
+    from .metrics_agent import SYSTEM_PROMPT as MA_PROMPT
+    from .remediator import SYSTEM_PROMPT as R_PROMPT
+    return {"LogAnalyzer": LA_PROMPT, "MetricsAgent": MA_PROMPT, "Remediator": R_PROMPT}.get(agent_name, "")
+
+
 __all__ = [
-    "PLANNER_NAME", "PLANNER_PROMPT", "PLANNER_TOOLS", "PLANNER_SCHEMA", "PLANNER_FALLBACK",
-    "LOG_ANALYZER_NAME", "LOG_ANALYZER_PROMPT", "LOG_ANALYZER_TOOLS", "LOG_ANALYZER_SCHEMA", "LOG_ANALYZER_FALLBACK",
-    "METRICS_NAME", "METRICS_PROMPT", "METRICS_TOOLS", "METRICS_SCHEMA", "METRICS_FALLBACK",
-    "DIAGNOSTICIAN_NAME", "DIAGNOSTICIAN_PROMPT", "DIAGNOSTICIAN_TOOLS", "DIAGNOSTICIAN_SCHEMA", "DIAGNOSTICIAN_FALLBACK",
-    "REMEDIATOR_NAME", "REMEDIATOR_PROMPT", "REMEDIATOR_TOOLS", "REMEDIATOR_SCHEMA", "REMEDIATOR_FALLBACK",
+    # Agent names
+    "PLANNER_NAME", "LOG_ANALYZER_NAME", "METRICS_NAME", "DIAGNOSTICIAN_NAME", "REMEDIATOR_NAME",
+    # Prompts (active-mode aliases — use get_prompt() for mode-aware access)
+    "PLANNER_PROMPT", "LOG_ANALYZER_PROMPT", "METRICS_PROMPT", "DIAGNOSTICIAN_PROMPT", "REMEDIATOR_PROMPT",
+    # Tools
+    "PLANNER_TOOLS", "LOG_ANALYZER_TOOLS", "METRICS_TOOLS", "DIAGNOSTICIAN_TOOLS", "REMEDIATOR_TOOLS",
+    # Schemas
+    "PLANNER_SCHEMA", "LOG_ANALYZER_SCHEMA", "METRICS_SCHEMA", "DIAGNOSTICIAN_SCHEMA", "REMEDIATOR_SCHEMA",
+    # Fallbacks
+    "PLANNER_FALLBACK", "LOG_ANALYZER_FALLBACK", "METRICS_FALLBACK", "DIAGNOSTICIAN_FALLBACK", "REMEDIATOR_FALLBACK",
+    # Mode switch helpers
+    "set_thinking_mode", "get_prompt",
 ]

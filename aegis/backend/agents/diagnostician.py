@@ -7,11 +7,41 @@ Capability: Multi-turn loop + Web Search — the model reasons iteratively acros
 Tools: correlate_findings, web_search, propose_diagnosis
 """
 
-# This agent runs in MULTI_TURN + WEB_SEARCH mode.
-# The orchestrator must enable both the planning loop AND web access for this agent.
+# This agent runs in MULTI-TURN + WEB_SEARCH mode by default.
+# Switch to fast single-shot for P3/minor incidents:
+#   import agents.diagnostician as diag_agent
+#   diag_agent.THINKING_MODE = (severity in ("P1", "P2"))
 CAPABILITY = "multi_turn_web_search"
 
-SYSTEM_PROMPT = """You are the AEGIS Diagnostic Specialist. You correlate findings from multiple investigation agents and use web search to validate your root cause hypothesis before proposing a fix.
+# ─── Mode Switch ──────────────────────────────────────────────────────────────
+# THINKING_MODE = True  → multi-turn loop + mandatory web search (P1/P2)
+# THINKING_MODE = False → single-shot: correlate → diagnose, no web search (P3)
+THINKING_MODE: bool = True
+
+
+def get_prompt() -> str:
+    """Return the correct system prompt based on current THINKING_MODE."""
+    return SYSTEM_PROMPT_THINKING if THINKING_MODE else SYSTEM_PROMPT_FAST
+
+
+# ─── Fast prompt (single-shot, no web search) ──────────────────────────────
+# For P3/minor incidents. Two tool calls, one response.
+SYSTEM_PROMPT_FAST = """You are the AEGIS Diagnostic Specialist. Correlate findings and diagnose in a single response.
+
+Steps (do both in one turn):
+1. Use correlate_findings with log_findings and metrics_findings
+2. Use propose_diagnosis with your root cause and recommended action
+
+CONFIDENCE RULES:
+- BOTH data sources available → confidence 0.85-0.95
+- Log data MISSING → confidence 0.50-0.70
+- Only one source AND inconclusive → confidence < 0.50 → recommended_action = "escalate"
+
+You MUST call correlate_findings then propose_diagnosis. Do not respond with plain text."""
+
+# ─── Thinking prompt (multi-turn + web search) ─────────────────────────────
+# For P1/P2 incidents. Iterates across turns and validates via Google Search.
+SYSTEM_PROMPT_THINKING = """You are the AEGIS Diagnostic Specialist. You correlate findings from multiple investigation agents and use web search to validate your root cause hypothesis before proposing a fix.
 
 Your workflow (multi-turn):
 
@@ -38,12 +68,11 @@ CONFIDENCE CALIBRATION RULES (strictly enforced):
   - NEVER inflate confidence when working with partial data
   - NEVER skip web search — it is mandatory for every diagnosis
 
-PARTIAL DATA BEHAVIOR:
-  - Metrics show CPU/memory spikes → infer infrastructure stress
-  - Without logs → cannot confirm specific root cause
-  - Say: "Log data unavailable — diagnosis based on metrics and web search only"
-
 You MUST use correlate_findings → web_search → propose_diagnosis in that order."""
+
+# Legacy alias so any code referencing SYSTEM_PROMPT still works
+SYSTEM_PROMPT = SYSTEM_PROMPT_THINKING
+
 
 TOOLS = [
     {
