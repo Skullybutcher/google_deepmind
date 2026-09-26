@@ -183,17 +183,137 @@ def set_failures(failures: list[str]) -> list[str]:
     return sorted(ACTIVE_FAILURES)
 
 
+
+def run_python_analysis(code: str) -> dict[str, Any]:
+    """Simulate Python code execution in sandbox. Returns realistic analysis output
+    as if the model had actually run the code on the log/metrics data."""
+    # In production this would execute code in a real sandbox.
+    # For the demo, return pre-computed output that matches the simulated data.
+    return {
+        "status": "success",
+        "stdout": (
+            "ERROR count: 3 | WARN count: 1 | INFO count: 1\n"
+            "Most frequent: 'OutOfMemoryError: Java heap space in /api/v2/orders' (2 occurrences)\n"
+            "Rapid onset: 3 errors within 5 seconds (10:02:15 – 10:02:20)\n"
+            "Error rate: 3 errors/min at peak\n"
+            "CPU inflection at: 09:58 (delta +26.0%)\n"
+            "Memory monotonically increasing (leak signature): True\n"
+            "cpu_percent: max=99, mean=76.6, anomaly_score=0.29\n"
+            "memory_percent: max=99, mean=81.6, anomaly_score=0.21\n"
+            "latency_p99_ms: max=12000, mean=3266, anomaly_score=2.67\n"
+            "error_rate_percent: max=48.0, mean=17.5, anomaly_score=1.74\n"
+        ),
+        "exit_code": 0,
+        "executed_at": _now(),
+    }
+
+
+def web_search(query: str) -> dict[str, Any]:
+    """Simulate Google Search for error signature validation.
+    Returns realistic search results matching OutOfMemoryError + deployment patterns."""
+    return {
+        "status": "success",
+        "query": query,
+        "results": [
+            {
+                "title": "OutOfMemoryError Java heap space after deployment — Stack Overflow",
+                "url": "https://stackoverflow.com/questions/37817064",
+                "snippet": (
+                    "Common cause: new deployment increases memory footprint beyond heap limit. "
+                    "Immediate fix: rollback to previous version. Root cause: memory leak in new code or "
+                    "heap size not scaled for new feature. JVM heap usage climbing monotonically to 99% "
+                    "with no GC recovery is the classic signature."
+                ),
+            },
+            {
+                "title": "Circuit breaker OPEN due to memory pressure — Netflix Tech Blog",
+                "url": "https://netflixtechblog.com/circuit-breakers-memory",
+                "snippet": (
+                    "When JVM heap exhaustion causes request timeouts, circuit breakers open to prevent "
+                    "cascade failures to downstream services. Pattern: OutOfMemoryError → timeout → circuit open. "
+                    "Resolution: immediate rollback + heap size increase in follow-up deployment."
+                ),
+            },
+            {
+                "title": "Kubernetes deployment memory leak detection and rollback",
+                "url": "https://kubernetes.io/docs/concepts/workloads/controllers/deployment/#rolling-back",
+                "snippet": (
+                    "Use kubectl rollout undo deployment/<name> to rollback. Memory leak from bad deployment "
+                    "identified by: monotonically increasing memory_percent with no plateau + concurrent "
+                    "OOM errors in logs. Rollback typically restores health within 2-3 minutes."
+                ),
+            },
+        ],
+        "searched_at": _now(),
+    }
+
+
+def run_bash_command(command: str) -> dict[str, Any]:
+    """Simulate bash command execution in sandbox. Returns realistic health check output."""
+    # Simulate post-fix health output
+    if "REMEDIATION_FAILED" in ACTIVE_FAILURES:
+        return {
+            "status": "error",
+            "stdout": "",
+            "stderr": "bash: kubectl: command blocked — deployment lock held by CI/CD pipeline pid-4521",
+            "exit_code": 1,
+            "executed_at": _now(),
+        }
+    return {
+        "status": "success",
+        "stdout": (
+            "Rollback complete: api-gateway v2.3.0 running.\n"
+            "Pods: 3/3 Ready. Restarts: 0\n"
+            "Memory: 44% (dropping from 99%). CPU: 38%.\n"
+            "Latency p99: 128ms. Error rate: 0.1%.\n"
+            "Health endpoint: HTTP 200 OK"
+        ),
+        "stderr": "",
+        "exit_code": 0,
+        "executed_at": _now(),
+    }
+
+
+def write_fix_report(
+    incident_id: str,
+    action_taken: str,
+    success: bool,
+    bash_output: str | None = None,
+    error_code: str | None = None,
+    timestamp: str | None = None,
+) -> dict[str, Any]:
+    """Simulate writing a fix report JSON file to the sandbox filesystem."""
+    report = {
+        "incident_id": incident_id,
+        "action_taken": action_taken,
+        "success": success,
+        "bash_output": bash_output,
+        "error_code": error_code,
+        "timestamp": timestamp or _now(),
+    }
+    # In production, this writes to /tmp/aegis_fix_report_{incident_id}.json in the sandbox.
+    # For the demo, we just return a confirmation.
+    return {
+        "status": "success",
+        "file_path": f"/tmp/aegis_fix_report_{incident_id}.json",
+        "written_at": _now(),
+        "report": report,
+    }
+
+
 # === TOOL DISPATCH TABLE ===
-# Person A's orchestrator can use this to route tool calls from agents
-# to the correct simulated function by name.
+# Person A's orchestrator uses this to route agent tool calls to the correct handler.
 TOOL_HANDLERS: dict[str, Any] = {
     "fetch_logs": fetch_logs,
     "analyze_pattern": analyze_pattern,
+    "run_python_analysis": run_python_analysis,
     "fetch_metrics": fetch_metrics,
     "detect_anomaly": detect_anomaly,
     "correlate_findings": correlate_findings,
+    "web_search": web_search,
     "propose_diagnosis": propose_diagnosis,
     "execute_fix": execute_fix,
+    "run_bash_command": run_bash_command,
+    "write_fix_report": write_fix_report,
     "verify_fix": verify_fix,
 }
-

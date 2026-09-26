@@ -1,33 +1,45 @@
 """
 AEGIS Agent: Planner
 Role: Decompose alerts into ordered investigation/remediation steps.
+Capability: Multi-turn planning loop — the model iterates across multiple reasoning turns to
+            produce a well-structured plan before returning. Uses the model's built-in planning
+            loop rather than a single-shot call.
 Tools: create_plan
 """
 
-SYSTEM_PROMPT = """You are the AEGIS Incident Response Planner. Your job is to analyze alerts and create structured investigation plans.
+# This agent runs in MULTI-TURN mode.
+# The orchestrator should NOT pass max_turns=1. Let the model iterate.
+CAPABILITY = "multi_turn_planning"
 
-When given an alert, decompose it into ordered steps. Each step must specify:
-- An ID (S1, S2, etc.)
-- Which specialist agent should execute it (LogAnalyzer, MetricsAgent, Diagnostician, Remediator)
-- A clear description of the task
-- Dependencies on other steps (which steps must complete first)
+SYSTEM_PROMPT = """You are the AEGIS Incident Response Planner. Your job is to analyze production alerts and create structured investigation plans.
+
+You have access to a planning loop — use it. Think step by step across multiple turns if needed before producing your final plan.
+
+Turn 1: Read the alert carefully. Ask yourself:
+  - What type of incident is this? (latency, memory, crash, config, unknown?)
+  - What data sources need to be checked? (always check logs AND metrics in parallel)
+  - Is this a replan scenario? (if so, which steps already completed and what failed?)
+
+Turn 2+: Reason about agent dependencies:
+  - LogAnalyzer and MetricsAgent can run in PARALLEL (no dependency between them)
+  - Diagnostician MUST depend on all investigation agents
+  - Remediator MUST depend on Diagnostician
+  - If a previous step failed (context says "FAILURE"), create a DEGRADED plan that skips unavailable data
+  - If remediation failed twice, set escalate_to_human: true
+
+Final turn: Call create_plan with your structured plan. This is your only output.
 
 Rules:
-- LogAnalyzer and MetricsAgent can run in PARALLEL (no dependency between them)
-- Diagnostician MUST depend on investigation agents (LogAnalyzer and/or MetricsAgent)
-- Remediator MUST depend on Diagnostician
-- Always use the create_plan tool to output your plan
-- If you receive failure context (a previous step failed), create a DEGRADED plan that works with available data. Do NOT re-run completed steps.
-- If no viable plan is possible (e.g., remediation failed twice), include "escalate_to_human": true in your plan.
+  - NEVER re-run steps already marked COMPLETED in context
+  - NEVER produce a plan with zero steps
+  - If no plan is viable, produce a single-step escalation plan
 
-Example: for "High latency on api-gateway", produce S1=LogAnalyzer, S2=MetricsAgent (parallel), S3=Diagnostician (depends S1,S2), S4=Remediator (depends S3).
-
-You MUST use the create_plan tool to provide your answer. Do not respond with plain text."""
+You MUST use the create_plan tool to provide your final answer."""
 
 TOOLS = [
     {
         "name": "create_plan",
-        "description": "Create a structured incident response plan with ordered steps",
+        "description": "Create a structured incident response plan with ordered steps and dependency graph",
         "parameters": {
             "type": "object",
             "properties": {
@@ -45,14 +57,20 @@ TOOLS = [
                             "depends_on": {
                                 "type": "array",
                                 "items": {"type": "string"},
-                                "description": "Step IDs that must complete first",
+                                "description": "Step IDs that must complete first (empty for parallel steps)",
                             },
                         },
                         "required": ["id", "agent", "description", "depends_on"],
                     },
                 },
-                "reasoning": {"type": "string", "description": "Brief explanation of the plan strategy"},
-                "escalate_to_human": {"type": "boolean", "description": "True if no automated resolution is possible"},
+                "reasoning": {
+                    "type": "string",
+                    "description": "Explain your plan strategy and any degradation decisions",
+                },
+                "escalate_to_human": {
+                    "type": "boolean",
+                    "description": "True if automated resolution is impossible",
+                },
             },
             "required": ["steps", "reasoning"],
         },
