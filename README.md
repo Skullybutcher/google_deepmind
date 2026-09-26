@@ -1,7 +1,8 @@
 # AEGIS — Autonomous Emergency Grid for Incident Response & Self-healing
 
-> **Hackathon track**: Autonomous Orchestration with Managed Agents  
-> **Stack**: Antigravity Agent (`antigravity-preview-09-2026`) · FastAPI · React + Vite · Cloud Run · Firebase Hosting
+> **Hackathon track**: Autonomous Orchestration with Managed Agents
+> **Stack**: Antigravity Agent (`antigravity-preview-09-2026`) · FastAPI · React + Vite
+> **Deploy**: Render (backend) + Netlify (frontend) — or Cloud Run + Firebase Hosting (GCP)
 
 ---
 
@@ -249,23 +250,51 @@ RESOLVED
 
 ## Deployment
 
-See [`doc/DEPLOYMENT.md`](doc/DEPLOYMENT.md) for the full Cloud Run + Firebase Hosting guide.
+Two options are both configured in the repo:
 
-Quick deploy:
+### Option A — Render + Netlify (free tier, fastest)
+
+Config files: [`render.yaml`](render.yaml), [`netlify.toml`](netlify.toml)
+
+1. **Backend → Render**: connect the GitHub repo at [render.com](https://render.com), pick "New Web Service" — `render.yaml` is auto-detected. Set `GEMINI_API_KEY` in the Render dashboard. `USE_REAL=1` is already in the config.
+
+2. **Frontend → Netlify**: connect the repo at [netlify.com](https://netlify.com) — `netlify.toml` is auto-detected. After Render gives you a URL, update the proxy target in `netlify.toml`:
+   ```toml
+   to = "https://aegis-backend-xxxx.onrender.com/api/:splat"
+   ```
+   Redeploy — `/api/*` proxies to Render, no CORS issues.
+
+### Option B — Cloud Run + Firebase Hosting (GCP)
+
+Config files: [`Dockerfile`](Dockerfile), [`firebase.json`](firebase.json), [`doc/DEPLOYMENT.md`](doc/DEPLOYMENT.md)
 
 ```bash
 # Backend → Cloud Run
 gcloud run deploy aegis-backend \
-  --source backend/ \
+  --source . \
   --region us-central1 \
   --set-env-vars USE_REAL=1 \
-  --set-secrets ANTIGRAVITY_API_KEY=aegis-api-key:latest \
+  --set-secrets GEMINI_API_KEY=aegis-api-key:latest \
   --allow-unauthenticated
 
-# Frontend → Firebase
+# Frontend → Firebase (firebase.json rewrites /api/** to Cloud Run — no CORS needed)
 cd frontend && npm run build
 firebase deploy --only hosting
 ```
+
+See [`doc/DEPLOYMENT.md`](doc/DEPLOYMENT.md) for the full GCP setup guide.
+
+---
+
+## Environment Variables
+
+| Variable | Required | Description |
+|---|---|---|
+| `GEMINI_API_KEY` | Yes (real mode) | Antigravity / Google AI API key |
+| `USE_REAL` | No | Set to `1` to use `RealBackend` (Interactions API). Default: `StubBackend` |
+| `PORT` | No | HTTP port (injected by Cloud Run / Render). Default: `8000` |
+
+Copy `.env.example` to `.env` for local development (never commit `.env`).
 
 ---
 
