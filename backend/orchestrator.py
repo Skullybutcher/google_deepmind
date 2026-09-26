@@ -42,8 +42,25 @@ class StubBackend:
     (ARCHITECTURE.md §3) and honors injected failures."""
 
     def __init__(self, failures: list | None = None):
-        self.failures = failures or []
+        self._static_failures = failures or []
+        self._incident_id: str | None = None
         self.timeout = 30.0  # stubs answer instantly; RealBackend sets 150s
+
+    @property
+    def failures(self) -> list:
+        """Read active_failures live from the store so mid-run injections are
+        picked up immediately, rather than using a snapshot taken at startup."""
+        if self._incident_id:
+            st = store.get_state(self._incident_id)
+            if st:
+                return st.get("active_failures", [])
+        return self._static_failures
+
+    @failures.setter
+    def failures(self, value: list):
+        # Orchestrator sets backend.failures = failures at startup; we store
+        # the incident_id instead so we can always read live state.
+        self._static_failures = value
 
     async def create_plan(self, alert: dict, context: str = "") -> PlanResult:
         # v1 is ALWAYS the full plan — degradation only happens on replan,
@@ -196,9 +213,13 @@ async def run_incident(incident_id: str, backend: AgentBackend, emit: EmitFn | N
 
     st = store.get_state(incident_id)
     alert, service = st["alert"], st["alert"]["service"]
-    failures = st.get("active_failures", [])
-    if hasattr(backend, "failures"):
-        backend.failures = failures
+    # Give the backend a live reference to the incident so active_failures are
+    # read from the store on every agent call (supports mid-run injection).
+    if hasattr(backend, "_incident_id"):
+        backend._incident_id = incident_id
+    elif hasattr(backend, "failures"):
+        # Fallback for non-stub backends: snapshot once at startup.
+        backend.failures = st.get("active_failures", [])
 
     # --- PLANNING (v1) ---
     await _emit(emit, "AGENT_STARTED", st, "Planner Agent creating investigation plan...")
@@ -285,8 +306,6 @@ async def run_incident(incident_id: str, backend: AgentBackend, emit: EmitFn | N
     await _emit(emit, "AGENT_STARTED", st, "Diagnostician correlating findings...")
     log_find = log_res.data if log_res.ok else {}
     met_find = met_res.data if met_res.ok else {}
-    if hasattr(backend, "failures"):
-        backend.failures = [f for f in failures]  # keep flags for remediate stage
     _set_step_status(incident_id, "Diagnostician", "IN_PROGRESS")
     diag = await _call(backend.diagnose(log_find, met_find), incident_id, "Diagnostician", "S3", backend)
     _set_step_status(incident_id, "Diagnostician",
