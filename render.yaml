@@ -1,6 +1,9 @@
 # AEGIS backend on Render (free tier).
 # Deploys from the GitHub repo — no Docker needed (native Python runtime).
-# User sets GEMINI_API_KEY in the Render dashboard (sync:false = never in git).
+# GEMINI_API_KEY lives in the 'smtg' Environment Group (dashboard-only, never
+# in git). Groups survive Blueprint re-applies — unlike service-level
+# sync:false vars, which get wiped on every Apply (root cause of the
+# GEMINI_API_KEY-not-found escalations on the live deploy).
 services:
   - type: web
     name: aegis-backend
@@ -10,9 +13,8 @@ services:
     startCommand: uvicorn backend.main:app --host 0.0.0.0 --port $PORT
     healthCheckPath: /api/health
     envVars:
+      - envGroupKey: smtg
       - key: USE_REAL
         value: "1"
       - key: PYTHON_VERSION
         value: "3.11"
-      - key: GEMINI_API_KEY
-        sync: false

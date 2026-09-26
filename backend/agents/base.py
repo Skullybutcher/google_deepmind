@@ -59,8 +59,12 @@ def _api_key() -> str:
 
 
 def _client():
-    for v in ("GOOGLE_API_KEY", "GEMINI_API_KEY"):
-        os.environ.pop(v, None)  # stale GOOGLE_API_KEY on this box is invalid
+    # PROD BUG FIXED: this used to os.environ.pop GEMINI_API_KEY, deleting the
+    # key from the running process on the FIRST agent call. Harmless locally
+    # (D:/dmh/.env file fallback saved us), fatal on Render (no file). We only
+    # pass api_key EXPLICITLY below, so the SDK never needs env-var probing;
+    # popping is unnecessary and destructive. (GOOGLE_API_KEY note: the SDK
+    # would prefer it over nothing, but we always pass api_key explicitly.)
     from google import genai
     return genai.Client(api_key=_api_key())
 
