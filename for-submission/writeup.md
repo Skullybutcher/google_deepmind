@@ -101,9 +101,8 @@ The dashboard is a dark-mode incident console built in React + Tailwind CSS. A l
 
 Failure-injection buttons sit alongside the "Trigger Incident" button. Judges click "Inject: Log Source Unavailable" mid-run and watch the flowchart show S1 fail, S3 replan, and the degraded plan continue — the system's intelligence is demonstrated through the UI, not just in a terminal.
 
-*[TODO: screenshot — happy-path RESOLVED dashboard — Person C]*  
-*[TODO: screenshot — failure → replan flowchart — Person C]*  
-*[TODO: demo video link (YouTube unlisted) — Person C]*
+*[TODO: screenshot — happy-path RESOLVED dashboard — Person C]*
+*[TODO: screenshot — failure → replan flowchart — Person C]*
 
 ---
 
@@ -113,4 +112,4 @@ AEGIS shows genuine multi-agent orchestration — real planning, delegation, sta
 
 ---
 
-*Word budget: ~1500. Assets still pending: architecture diagram (Person A), 2 screenshots + demo video (Person C).*
+*Word budget: ~1500. Assets still pending: architecture diagram (Person A), 2 screenshots (Person C).*
